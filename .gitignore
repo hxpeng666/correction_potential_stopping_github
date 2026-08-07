@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.venv/
+venv/
+models/
+data/
+results/
+logs/
+*.pt
+*.pth
+*.safetensors
+*.tar.gz
