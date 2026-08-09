@@ -199,8 +199,17 @@ def main() -> None:
             if protected & (texts_by_split["probe_train"] | texts_by_split["calibration"]):
                 failures.append("mmlu: normalized question leakage")
             heldout = read_jsonl(prepared / "heldout.jsonl")
-            if set(Counter(row["subject"] for row in heldout)) != set(MMLU_SUBJECTS):
+            if selection is not None:
+                heldout = [
+                    row for row in heldout
+                    if str(row["problem_id"]) in ids_by_split["heldout"]
+                ]
+            heldout_counts = Counter(row["subject"] for row in heldout)
+            if set(heldout_counts) != set(MMLU_SUBJECTS):
                 failures.append("mmlu: heldout subject coverage !=57")
+            if config["dataset"].get("heldout_protocol") == "57_subject_balanced_hash_mmlu1k":
+                if len(heldout) != 1000 or set(heldout_counts.values()) != {17, 18}:
+                    failures.append("mmlu: MMLU-1k subject counts must be 17/18 and sum to 1000")
         evidence["datasets"][dataset] = dataset_evidence
     payload = {
         "status": "PASS" if not failures else "FAIL",

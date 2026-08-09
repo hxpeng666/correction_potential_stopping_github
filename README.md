@@ -2,7 +2,7 @@
 
 这是论文实验的设备无关参考实现：冻结 `Qwen/Qwen3-4B`，在句子级检查点上使用第 20 层隐藏动态预测“继续推理后仍可能纠正”的风险，并在风险足够低时停止自由推理、只生成一次最终答案。
 
-仓库覆盖完整 GSM8K 与 MMLU 57 学科流程：固定数据划分、Dense/Direct/强制作答公共缓存、四种停止目标、轨迹最弱点保护、有限网格风险校准、固定预算基线、回放延迟、10,000 次配对 bootstrap、表格和中文报告。
+仓库覆盖本轮最终单种子协议：完整 GSM8K official test 与覆盖 57 学科的 MMLU-1k，包含固定数据划分、Dense/Direct/强制作答公共缓存、四种停止目标、轨迹最弱点保护、有限网格风险校准、固定预算基线、回放延迟、10,000 次配对 bootstrap、表格和中文报告。
 
 > 本发布包故意不包含特定服务器的共享任务队列、A100/2080 Ti 生产者—消费者调度、GPU 守护进程或 NAS 路径。单卡可以直接运行；多卡使用静态分片参数启动多个进程。科学协议、缓存格式和输出不随调度方式改变。
 
@@ -65,8 +65,8 @@ L = L_point + L_traj，轨迹软最小值 beta=0.5
 | 句子检查点 | 从 64 开始，最晚 768，相邻至少 8 个 token；边界为换行或 `. ! ? ;` |
 | 缓存的固定位置 | 64、96、128、192、256、384、512、768 |
 | 主表固定预算基线 | 64、96、128、192、256 |
-| GSM8K | 官方 train 中 5,000 个探针训练样本和 1,000 个策略校准样本；完整 official test 1,319 个 held-out 样本 |
-| MMLU | 非 test 数据中分层抽取 4,000 个探针训练样本和 1,000 个策略校准样本；57 学科完整 official test 14,042 个 held-out 样本 |
+| GSM8K | 官方 train 中固定 2,000 个探针训练样本和 1,000 个策略校准样本；完整 official test 1,319 题 |
+| MMLU | 非 test 数据中按 57 学科分层固定 2,000 个探针训练样本和 1,000 个策略校准样本；官方 test 中按学科平衡固定 1,000 题，每科 17 或 18 题 |
 | MMLU 提示 | 每个学科使用 dev 中的标准 5-shot 示例 |
 
 每个生成任务的随机种子只由下列键决定，不依赖启动时间、GPU、工作进程或分片：
@@ -77,8 +77,11 @@ L = L_point + L_traj，轨迹软最小值 beta=0.5
 
 配置文件：
 
-- `configs/final_paper_replay_v2_gsm8k_fp16.yaml`
-- `configs/final_paper_replay_v2_mmlu_fp16.yaml`
+- `configs/final_paper_single_seed_gsm8k_fp16.yaml`
+- `configs/final_paper_single_seed_mmlu1k_fp16.yaml`
+
+这里的 MMLU 结果必须写作 **MMLU-1k**，不能写作完整 MMLU test。选择过程只依赖固定 seed、学科和 sample ID，不读取模型输出、正确率、轨迹长度或延迟。
+采用 1,000 题的同类工作依据、统计限制与报告边界见 [MMLU-1k 协议说明](docs/MMLU_1K_PROTOCOL.md)。
 
 ## 3. 安装
 
@@ -115,6 +118,7 @@ python -m compileall -q src scripts tests
 
 ```bash
 python scripts/prepare_final_paper_data.py
+python scripts/prepare_final_paper_single_seed_scope.py
 python scripts/prepare_final_paper_smoke.py
 ```
 
@@ -133,16 +137,20 @@ python scripts/prepare_final_paper_data.py \
 
 注意：GSM 快照参数应指向包含 `main/` 的修订版本根目录。
 
-数据脚本会写出不可变 JSONL 文件和完整 ID 清单：
+第一个脚本写出不可变父数据与完整 ID 清单；第二个脚本在其上生成本轮选择层：
 
 ```text
 data/final_paper_replay_v2/{gsm8k,mmlu}/
 results/final_paper_replay_v2/splits/{gsm8k,mmlu}_split.json
+splits/final_paper_single_seed_mmlu1k_v1/
+├── scope_manifest.json
+├── audit_selection.json
+└── {gsm8k,mmlu}_{probe_train,calibration,heldout}_ids.json
 ```
 
-仓库的 `splits/` 同时保存本次论文协议实际使用的固定清单。数据准备结束时会比较指纹；任何库版本、路由或排序漂移都会使检查失败并停止，而不会静默产生另一套 sample ID。
+仓库的 `splits/` 同时保存本次论文协议实际使用的固定清单。重新运行选择层必须得到相同指纹和 ID；任何路由或排序漂移都应使检查失败，而不能静默产生另一套样本。服务器本轮运行清单已与仓库清单逐 ID 比较，六个 dataset/split 组合完全一致。
 
-MMLU 固定快照中的 `auxiliary_train.subject` 为空。发布协议先使用 dev 和 validation 问题的 TF-IDF 中心，对去重后的辅助训练问题执行确定性学科路由，再按 57 个学科平衡分配 4,000/1,000。test 标签从不进入路由；test 问题文本只用于协议要求的规范化重复项剔除。相关 source index 和路由分数均保存在数据记录及 `mmlu_split.json` 中。
+MMLU 固定快照中的 `auxiliary_train.subject` 为空。父协议先使用 dev 和 validation 问题的 TF-IDF 中心，对去重后的辅助训练问题执行确定性学科路由，再构造 4,000/1,000 父划分；本轮从每科父 probe 固定前缀中平衡取 2,000 题。MMLU-1k 在每科 official test 内按 `sha256(seed,dataset,split,problem_id)` 排序，前 31 科各取 18 题，其余 26 科各取 17 题。test 标签从不参与路由或选择。
 
 ## 5. 公共缓存格式
 
@@ -168,7 +176,7 @@ cache/<数据集>/
 ```bash
 python scripts/collect_final_paper_dense_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
+  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
   --split-manifest results/final_paper_replay_v2/splits/gsm8k_split.json \
   --split calibration \
   --cache-root results/final_paper_replay_v2/cache/gsm8k \
@@ -194,6 +202,9 @@ python scripts/audit_final_paper_replay_cache.py \
   --cache-base results/final_paper_replay_v2/cache \
   --mode smoke \
   --selection results/final_paper_replay_v2/selections/smoke_selection.json \
+  --gsm8k-config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --mmlu-config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
+  --splits-root results/final_paper_replay_v2/splits \
   --output results/final_paper_replay_v2/SMOKE_CACHE_AUDIT.json
 ```
 
@@ -203,28 +214,31 @@ python scripts/audit_final_paper_replay_cache.py \
 
 ### 单卡
 
-对两个数据集和三个划分依次运行 Dense，再运行分支采集，最后合并：
+对两个数据集和三个划分依次运行 Dense，再运行分支采集，最后合并。每次 Dense 采集都必须传入本轮固定 ID 文件；以下是完整 GSM8K held-out 的示例：
 
 ```bash
 python scripts/collect_final_paper_dense_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
-  --split-manifest results/final_paper_replay_v2/splits/gsm8k_split.json \
+  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --split-manifest splits/gsm8k_split.json \
   --split heldout \
-  --cache-root results/final_paper_replay_v2/cache/gsm8k \
+  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
+  --sample-ids splits/final_paper_single_seed_mmlu1k_v1/gsm8k_heldout_ids.json \
   --gpu 0 --resume
 
 python scripts/collect_final_paper_branch_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
+  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
   --split heldout \
-  --cache-root results/final_paper_replay_v2/cache/gsm8k \
+  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
   --gpu 0 --resume
 
 python scripts/merge_final_paper_replay_cache.py \
-  --cache-root results/final_paper_replay_v2/cache/gsm8k \
+  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
   --split heldout --resume
 ```
+
+对 `probe_train` 和 `calibration` 重复时替换 split 与对应 ID 文件。MMLU 使用 `configs/final_paper_single_seed_mmlu1k_fp16.yaml` 和 `mmlu_<split>_ids.json`。分支采集读取已经存在的 Dense 文件，因此不再接收 ID 文件。
 
 ### 多卡静态分片
 
@@ -246,9 +260,13 @@ python scripts/collect_final_paper_dense_cache.py ... \
 
 ```bash
 python scripts/audit_final_paper_replay_cache.py \
-  --cache-base results/final_paper_replay_v2/cache \
+  --cache-base results/final_paper_single_seed_mmlu1k_v1/cache \
   --mode formal \
-  --output results/final_paper_replay_v2/CACHE_AUDIT.json
+  --selection splits/final_paper_single_seed_mmlu1k_v1/audit_selection.json \
+  --gsm8k-config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --mmlu-config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
+  --splits-root splits \
+  --output results/final_paper_single_seed_mmlu1k_v1/CACHE_AUDIT.json
 ```
 
 审计包括样本完整性、数据划分泄漏、57 学科覆盖、配置指纹、token 长度、hidden 中的 NaN/Inf、记录与向量对齐、重复或缺失检查点、Direct 和强制作答分支，以及五元组随机种子。
@@ -274,7 +292,7 @@ python scripts/collect_final_paper_dense_cache.py \
 
 python scripts/collect_final_paper_dense_cache.py \
   --dataset mmlu \
-  --config configs/final_paper_replay_v2_mmlu_fp16.yaml \
+  --config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
   --split-manifest results/final_paper_replay_v2/splits/mmlu_split.json \
   --split probe_train \
   --cache-root results/final_paper_replay_v2/timing_cache/mmlu \
@@ -306,11 +324,11 @@ python scripts/benchmark_final_paper_stopper.py \
 ```bash
 python scripts/materialize_final_paper_replay_view.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
-  --cache-root results/final_paper_replay_v2/cache/gsm8k \
+  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
   --cost-model results/final_paper_replay_v2/single_request_cost_model.json \
   --probe-overhead-ms <平均毫秒数> \
-  --output-root results/final_paper_replay_v2/replay/gsm8k \
+  --output-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
   --resume
 ```
 
@@ -329,10 +347,10 @@ A100-SXM4-80GB 单请求回放估计延迟
 ```bash
 python scripts/evaluate_final_paper_baselines.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
-  --dense-root results/final_paper_replay_v2/replay/gsm8k \
-  --checkpoint-root results/final_paper_replay_v2/replay/gsm8k \
-  --output results/final_paper_replay_v2/gsm8k/baselines \
+  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --dense-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
+  --checkpoint-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/baselines \
   --resume
 ```
 
@@ -341,28 +359,28 @@ python scripts/evaluate_final_paper_baselines.py \
 ```bash
 # 受控预测目标：仅使用检查点 BCE
 python scripts/train_final_paper_probe.py \
-  --dataset gsm8k --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
-  --raw-root results/final_paper_replay_v2/replay/gsm8k \
-  --output results/final_paper_replay_v2/gsm8k/probes/correctness \
+  --dataset gsm8k --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --raw-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correctness \
   --method correctness --loss bce --schedule sentence --layer 20 \
   --feature-kind full --seed 20260803 --gpu 0 --resume
 
 python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_replay_v2/gsm8k/probes/consistency \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/consistency \
   --method consistency --loss bce
 
 python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_replay_v2/gsm8k/probes/last_switch \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/last_switch \
   --method last_switch --loss bce
 
 # 损失函数消融
 python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_replay_v2/gsm8k/probes/correction_bce \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correction_bce \
   --method correction --loss bce
 
 # 主方法
 python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_replay_v2/gsm8k/probes/correction_trajectory \
+  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correction_trajectory \
   --method correction --loss bce_traj
 ```
 
@@ -376,7 +394,8 @@ python scripts/train_final_paper_probe.py ... \
 
 ```bash
 python scripts/compile_final_paper_replay_v2.py \
-  --root results/final_paper_replay_v2 \
+  --root results/final_paper_single_seed_mmlu1k_v1 \
+  --scope-manifest splits/final_paper_single_seed_mmlu1k_v1/scope_manifest.json \
   --bootstrap-repetitions 10000 \
   --latency-label 'A100-SXM4-80GB 单请求回放估计延迟'
 ```
@@ -384,11 +403,11 @@ python scripts/compile_final_paper_replay_v2.py \
 编译器会验证所有方法使用相同 held-out sample IDs，产生：
 
 ```text
-results/final_paper_replay_v2/
+results/final_paper_single_seed_mmlu1k_v1/
 ├── tables/
 │   ├── main_results.csv
 │   ├── gsm8k_complete_results.csv
-│   ├── mmlu_complete_results.csv
+│   ├── mmlu1k_results.csv
 │   ├── controlled_target_baselines.csv
 │   ├── trajectory_protection_ablation.csv
 │   ├── paired_bootstrap_differences.csv
