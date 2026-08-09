@@ -1,0 +1,53 @@
+seed: 20260803
+protocol_id: legacy_empirical_v4_existing_fp16_seed_override
+dataset:
+  name: openai/gsm8k
+  config: main
+  hub_revision: 740312add88f781978c0658806c59bc2815b9866
+  probe_train_count: 1000
+  calibration_count: 500
+  heldout_count: 1319
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [20]
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+checkpoint_protocol:
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+prompt:
+  system: "Solve the grade-school math problem carefully. Think step by step, then end with exactly \\boxed{number}."
+  user_template: "Problem: {question}"
+probe:
+  architecture: [5126, 384, 96, 1]
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  trajectory_softmin_beta: 0.5
+  training_seed: 0
+  internal_split_seed: 0
+calibration:
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  rate_matched_empirical_budgets: [2, 5, 10]
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+statistics:
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260803

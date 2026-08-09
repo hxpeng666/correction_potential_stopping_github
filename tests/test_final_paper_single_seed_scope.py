@@ -18,16 +18,18 @@ def test_single_seed_scope_counts_and_invariants():
     gsm = json.loads((ROOT / "splits/gsm8k_split.json").read_text(encoding="utf-8"))
     mmlu = json.loads((ROOT / "splits/mmlu_split.json").read_text(encoding="utf-8"))
     scope = MODULE.build_scope(gsm, mmlu, 20260803)
-    assert scope["datasets"]["gsm8k"]["probe_train_count"] == 2000
-    assert scope["datasets"]["gsm8k"]["calibration_count"] == 1000
+    assert scope["datasets"]["gsm8k"]["probe_train_count"] == 1000
+    assert scope["datasets"]["gsm8k"]["calibration_count"] == 500
     assert scope["datasets"]["gsm8k"]["heldout_count"] == 1319
-    assert scope["datasets"]["mmlu"]["probe_train_count"] == 2000
-    assert scope["datasets"]["mmlu"]["calibration_count"] == 1000
+    assert scope["datasets"]["mmlu"]["probe_train_count"] == 1000
+    assert scope["datasets"]["mmlu"]["calibration_count"] == 500
     assert scope["datasets"]["mmlu"]["heldout_count"] == 1000
     counts = scope["datasets"]["mmlu"]["heldout_subject_counts"]
     assert len(counts) == 57
     assert set(counts.values()) == {17, 18}
     assert sum(counts.values()) == 1000
+    assert set(map(len, scope["datasets"]["mmlu"]["probe_train_by_subject"].values())) == {17, 18}
+    assert set(map(len, scope["datasets"]["mmlu"]["calibration_by_subject"].values())) == {8, 9}
 
 
 def test_single_seed_scope_is_deterministic_and_disjoint():

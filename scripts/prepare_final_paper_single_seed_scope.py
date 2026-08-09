@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 replay-v2 父划分生成本轮单种子论文实验的不可变选择层。"""
+"""从 replay-v2 父划分生成当前单种子旧经验协议的不可变选择层。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,15 +43,22 @@ def mmlu_subject(problem_id: str, subjects: list[str]) -> str:
     return matches[0]
 
 
-def select_mmlu_probe(parent: dict[str, Any], total: int = 2000) -> dict[str, list[str]]:
+def select_mmlu_stratified(
+    parent: dict[str, Any], split: str, total: int, seed: int
+) -> dict[str, list[str]]:
+    """按学科取固定前缀，并用固定 RNG 决定哪些学科多取一题。"""
     subjects = list(parent["subjects"])
     base, remainder = divmod(total, len(subjects))
+    extra_subjects = set(
+        np.random.default_rng(seed).permutation(subjects)[:remainder].tolist()
+    )
     result = {}
-    for index, subject in enumerate(subjects):
-        quota = base + int(index < remainder)
-        candidates = parent["subject_manifest"][subject]["probe_train_problem_ids"]
+    key = f"{split}_problem_ids"
+    for subject in subjects:
+        quota = base + int(subject in extra_subjects)
+        candidates = parent["subject_manifest"][subject][key]
         if len(candidates) < quota:
-            raise ValueError(f"{subject} 的 probe 候选不足：{len(candidates)} < {quota}")
+            raise ValueError(f"{subject} 的 {split} 候选不足：{len(candidates)} < {quota}")
         result[subject] = list(candidates[:quota])
     return result
 
@@ -77,27 +86,89 @@ def select_mmlu_heldout(
     return selected
 
 
-def build_scope(gsm: dict[str, Any], mmlu: dict[str, Any], seed: int) -> dict[str, Any]:
+def group_reference_ids(
+    parent: dict[str, Any], split: str, problem_ids: list[str]
+) -> dict[str, list[str]]:
+    """按父清单学科映射验证并分组仓库内冻结 ID。"""
+    if split == "heldout":
+        grouped = {subject: [] for subject in parent["subjects"]}
+        for problem_id in problem_ids:
+            grouped[mmlu_subject(problem_id, parent["subjects"])].append(problem_id)
+        return grouped
+    wanted = set(problem_ids)
+    grouped: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    key = f"{split}_problem_ids"
+    for subject in parent["subjects"]:
+        subject_ids = [
+            str(value)
+            for value in parent["subject_manifest"][subject][key]
+            if str(value) in wanted
+        ]
+        grouped[subject] = subject_ids
+        seen.update(subject_ids)
+    if seen != wanted:
+        missing = sorted(wanted - seen)
+        raise ValueError(f"冻结 {split} ID 不在父清单中：{missing[:5]}")
+    return grouped
+
+
+def load_reference_ids(root: Path, dataset: str, split: str) -> list[str]:
+    path = root / f"{dataset}_{split}_ids.json"
+    values = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(values, list):
+        raise ValueError(f"冻结 ID 文件必须是列表：{path}")
+    return [str(value) for value in values]
+
+
+def build_scope(
+    gsm: dict[str, Any],
+    mmlu: dict[str, Any],
+    seed: int,
+    reference_root: Path | None = None,
+) -> dict[str, Any]:
     if seed != 20260803:
         raise ValueError("论文协议只允许 seed=20260803")
-    gsm_probe = list(gsm["files"]["probe_train"]["problem_ids"][:2000])
-    gsm_calibration = list(gsm["files"]["calibration"]["problem_ids"])
-    gsm_heldout = list(gsm["files"]["heldout"]["problem_ids"])
-    mmlu_probe_by_subject = select_mmlu_probe(mmlu, 2000)
-    mmlu_probe = [item for subject in mmlu["subjects"] for item in mmlu_probe_by_subject[subject]]
-    mmlu_heldout_by_subject = select_mmlu_heldout(mmlu, seed, 1000)
-    mmlu_heldout = [
-        item for subject in mmlu["subjects"] for item in mmlu_heldout_by_subject[subject]
-    ]
+    if reference_root is None:
+        reference_root = ROOT / "splits/legacy_empirical_v4_train1000_cal500_mmlu1k"
+    gsm_probe = load_reference_ids(reference_root, "gsm8k", "probe_train")
+    gsm_calibration = load_reference_ids(reference_root, "gsm8k", "calibration")
+    gsm_heldout = load_reference_ids(reference_root, "gsm8k", "heldout")
+    mmlu_probe = load_reference_ids(reference_root, "mmlu", "probe_train")
+    mmlu_calibration = load_reference_ids(reference_root, "mmlu", "calibration")
+    mmlu_heldout = load_reference_ids(reference_root, "mmlu", "heldout")
+    expected = {
+        "gsm8k": {"probe_train": 1000, "calibration": 500, "heldout": 1319},
+        "mmlu": {"probe_train": 1000, "calibration": 500, "heldout": 1000},
+    }
+    all_ids = {
+        "gsm8k": {"probe_train": gsm_probe, "calibration": gsm_calibration, "heldout": gsm_heldout},
+        "mmlu": {"probe_train": mmlu_probe, "calibration": mmlu_calibration, "heldout": mmlu_heldout},
+    }
+    for dataset, splits in all_ids.items():
+        for split, values in splits.items():
+            if len(values) != expected[dataset][split] or len(set(values)) != len(values):
+                raise ValueError(f"{dataset}/{split} 冻结 ID 数量或唯一性错误")
+        if set(splits["probe_train"]) & set(splits["calibration"]):
+            raise ValueError(f"{dataset} probe/calibration 重叠")
+        if (set(splits["probe_train"]) | set(splits["calibration"])) & set(splits["heldout"]):
+            raise ValueError(f"{dataset} train/calibration 与 heldout 重叠")
+    for split, values in all_ids["gsm8k"].items():
+        parent_ids = set(str(value) for value in gsm["files"][split]["problem_ids"])
+        if not set(values) <= parent_ids:
+            raise ValueError(f"GSM8K {split} 冻结 ID 不在父清单中")
+    mmlu_probe_by_subject = group_reference_ids(mmlu, "probe_train", mmlu_probe)
+    mmlu_calibration_by_subject = group_reference_ids(mmlu, "calibration", mmlu_calibration)
+    mmlu_heldout_by_subject = group_reference_ids(mmlu, "heldout", mmlu_heldout)
     scope = {
         "schema_version": 1,
-        "protocol_id": "final_paper_single_seed_mmlu1k_v1",
+        "protocol_id": "legacy_empirical_v4_train1000_cal500_mmlu1k",
         "seed": seed,
         "selection_is_output_independent": True,
         "datasets": {
             "gsm8k": {
                 "parent_split_fingerprint": gsm["fingerprint"],
-                "selection": "父划分固定哈希顺序的前 2000 个 probe；完整 calibration 和 official test",
+                "selection": "父划分固定顺序的前 1000 个 probe、前 500 个 calibration；完整 official test",
                 "probe_train_problem_ids": gsm_probe,
                 "calibration_problem_ids": gsm_calibration,
                 "heldout_problem_ids": gsm_heldout,
@@ -107,16 +178,20 @@ def build_scope(gsm: dict[str, Any], mmlu: dict[str, Any], seed: int) -> dict[st
             },
             "mmlu": {
                 "parent_split_fingerprint": mmlu["fingerprint"],
-                "selection": "probe 按 57 学科平衡取 2000；heldout 学科内固定哈希平衡取 MMLU-1k",
+                "selection": "probe/calibration 按 57 学科分层取 1000/500；heldout 为固定 MMLU-1k",
                 "subjects": list(mmlu["subjects"]),
                 "probe_train_by_subject": mmlu_probe_by_subject,
+                "calibration_by_subject": mmlu_calibration_by_subject,
                 "heldout_by_subject": mmlu_heldout_by_subject,
                 "probe_train_problem_ids": mmlu_probe,
-                "calibration_problem_ids": list(mmlu["files"]["calibration"]["problem_ids"]),
+                "calibration_problem_ids": mmlu_calibration,
                 "heldout_problem_ids": mmlu_heldout,
                 "probe_train_count": len(mmlu_probe),
-                "calibration_count": int(mmlu["files"]["calibration"]["count"]),
+                "calibration_count": len(mmlu_calibration),
                 "heldout_count": len(mmlu_heldout),
+                "probe_train_source": "auxiliary_train",
+                "calibration_source": "auxiliary_train（相对 official test 存在分布偏移）",
+                "heldout_source": "official test",
                 "heldout_subject_counts": {
                     subject: len(ids) for subject, ids in mmlu_heldout_by_subject.items()
                 },
@@ -141,13 +216,21 @@ def main() -> None:
     parser.add_argument("--gsm-parent", type=Path, default=Path("splits/gsm8k_split.json"))
     parser.add_argument("--mmlu-parent", type=Path, default=Path("splits/mmlu_split.json"))
     parser.add_argument(
-        "--output-root", type=Path, default=Path("splits/final_paper_single_seed_mmlu1k_v1")
+        "--reference-root",
+        type=Path,
+        default=Path("splits/legacy_empirical_v4_train1000_cal500_mmlu1k"),
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("results/legacy_empirical_v4/splits"),
     )
     args = parser.parse_args()
     gsm_path = args.gsm_parent if args.gsm_parent.is_absolute() else ROOT / args.gsm_parent
     mmlu_path = args.mmlu_parent if args.mmlu_parent.is_absolute() else ROOT / args.mmlu_parent
+    reference = args.reference_root if args.reference_root.is_absolute() else ROOT / args.reference_root
     output = args.output_root if args.output_root.is_absolute() else ROOT / args.output_root
-    scope = build_scope(load_json(gsm_path), load_json(mmlu_path), args.seed)
+    scope = build_scope(load_json(gsm_path), load_json(mmlu_path), args.seed, reference)
     atomic_json(scope, output / "scope_manifest.json")
     audit_selection = {
         dataset: {
