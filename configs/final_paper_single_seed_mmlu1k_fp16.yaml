@@ -1,0 +1,69 @@
+seed: 20260803
+protocol_id: final_paper_single_seed_mmlu1k_v1
+dataset:
+  name: cais/mmlu
+  hub_revision: c30699e8356da336a370243923dbaf21066bb9fe
+  prepared_root: data/final_paper_replay_v2/mmlu
+  subjects: 57
+  probe_train_count: 2000
+  calibration_count: 1000
+  heldout_count: 1000
+  heldout_protocol: 57_subject_balanced_hash_mmlu1k
+  demonstrations_per_subject: 5
+  auxiliary_subject_routing: tfidf_dev_validation_centroid_round_robin
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [20]
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+checkpoint_protocol:
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+prompt:
+  system: "Answer the multiple-choice question. Think step by step, then end with exactly one boxed option letter such as \\boxed{A}."
+cache:
+  root: results/final_paper_single_seed_mmlu1k_v1/cache/mmlu
+  latency_label: 单请求回放估计延迟
+probe:
+  architecture: [5126, 384, 96, 1]
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  trajectory_softmin_beta: 0.5
+  seed: 20260803
+  seeds: [20260803]
+calibration:
+  quantile_grid_size: 101
+  confidence: 0.95
+  empirical_lost_correct_percent: [0.0, 0.5, 1.0, 2.0]
+  coverage_targets: [0.30, 0.50, 0.70, 0.90]
+  online_workpoints:
+    strict: {family: formal, key: "0.005"}
+    balanced: {family: formal, key: "0.01"}
+    aggressive: {family: formal, key: "0.02"}
+  simultaneous_upper_bound_alpha: [0.005, 0.01, 0.02]
+  workpoints:
+    strict: 0.005
+    balanced: 0.01
+    aggressive: 0.02
+statistics:
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260803
+  mmlu_subject_stratified: true
+output_dir: results/final_paper_single_seed_mmlu1k_v1/mmlu

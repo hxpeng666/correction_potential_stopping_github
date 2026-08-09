@@ -8,8 +8,10 @@
 - [ ] 使用 FP16 和 SDPA，不进行量化，也不训练基础模型。
 - [ ] 全局随机种子严格为 `20260803`。
 - [ ] 数据集 revision 与 `prepare_final_paper_data.py` 中固定的哈希一致。
-- [ ] GSM8K 划分为 5,000/1,000/1,319，MMLU 划分为 4,000/1,000/14,042。
-- [ ] MMLU held-out 覆盖全部 57 个学科，每个学科恰好使用 5 个 dev demonstrations。
+- [ ] 已先生成父划分，再运行 `prepare_final_paper_single_seed_scope.py`，scope 指纹与仓库清单一致。
+- [ ] GSM8K 为 2,000/1,000/1,319，其中 held-out 是完整 official test。
+- [ ] MMLU 为 2,000/1,000/1,000；MMLU-1k 覆盖全部 57 个学科，每科 17 或 18 题。
+- [ ] MMLU 每个学科恰好使用 5 个 dev demonstrations；held-out 选择不读取模型输出或标签。
 
 ## 公共缓存
 
@@ -42,7 +44,8 @@
 - [ ] Direct 或强制作答 worker 的时间不进入 replay 成本。
 - [ ] 每个已检查的检查点都按声明方式计入停止器开销。
 - [ ] 每个延迟列均标记为“目标设备单请求回放估计延迟”。
-- [ ] 每种方法的完整 official held-out sample ID 完全对齐。
+- [ ] 每种方法的 held-out sample ID 完全对齐：GSM8K 为完整 official test，MMLU 为冻结的 MMLU-1k。
 - [ ] 配对 bootstrap 重复 10,000 次，所有方法使用相同的重采样 ID。
 - [ ] 净准确率与 lost-correct 风险分开报告。
 - [ ] 最终结论遵守预先声明的正面或负面判定标准，不使用 held-out 调参。
+- [ ] 报告将 MMLU 结果明确标作 `MMLU-1k`，不声称为完整 14,042 题 MMLU test。

@@ -70,7 +70,9 @@ def dense_as_policy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
-def load_methods(root: Path, dataset: str) -> dict[str, list[dict[str, Any]]]:
+def load_methods(
+    root: Path, dataset: str, expected_heldout: int
+) -> dict[str, list[dict[str, Any]]]:
     baseline_path = root / dataset / "baselines" / "baseline_records.pt"
     baseline = torch.load(baseline_path, map_location="cpu", weights_only=False)["records"]["heldout"]
     methods: dict[str, list[dict[str, Any]]] = {
@@ -88,9 +90,11 @@ def load_methods(root: Path, dataset: str) -> dict[str, list[dict[str, Any]]]:
         for workpoint, alpha in WORKPOINTS.items():
             methods[f"{probe}:{workpoint}"] = source[alpha]
     reference = sorted(row["problem_id"] for row in methods["Dense"])
-    expected = 1319 if dataset == "gsm8k" else 14042
-    if len(reference) != expected or len(set(reference)) != expected:
-        raise ValueError(f"{dataset} heldout IDs incomplete/nonunique: {len(reference)}/{expected}")
+    if len(reference) != expected_heldout or len(set(reference)) != expected_heldout:
+        raise ValueError(
+            f"{dataset} heldout IDs incomplete/nonunique: "
+            f"{len(reference)}/{expected_heldout}"
+        )
     for method, rows in methods.items():
         ids = sorted(str(row["problem_id"]) for row in rows)
         if ids != reference:
@@ -296,9 +300,24 @@ def verdict(all_metrics: dict[str, dict[str, dict[str, Any]]], root: Path) -> st
     return zh
 
 
-def report(root: Path, main_rows: list[dict], zh_verdict: str) -> None:
+def report(
+    root: Path,
+    main_rows: list[dict],
+    zh_verdict: str,
+    scope: dict[str, Any] | None,
+) -> None:
     def selected(dataset: str, method: str) -> dict:
         return next(row for row in main_rows if row["dataset"] == dataset and row["method"] == method)
+    data_description = (
+        "GSM8K 从官方训练集中固定选取 2,000/1,000 题作为探针训练集和策略校准集，"
+        "官方测试集 1,319 题全部作为留出集；MMLU 从非测试数据中按 57 学科固定选取 "
+        "2,000/1,000 题，并在官方 test 中按学科平衡、学科内固定哈希选择 1,000 题，"
+        "每科 17 或 18 题。MMLU 结果必须标作 MMLU-1k。5-shot 示例仅来自开发集。"
+        "特征标准化、训练和阈值选择均未访问留出集。"
+        if scope is not None
+        else
+        "本报告使用旧版完整父划分；特征标准化、训练和阈值选择均未访问留出集。"
+    )
     lines = [
         "# 最终单随机种子论文实验报告",
         "",
@@ -306,7 +325,7 @@ def report(root: Path, main_rows: list[dict], zh_verdict: str) -> None:
         "",
         "## 实验与数据设置",
         "",
-        "GSM8K 从官方训练集中固定选取 5,000/1,000 题作为探针训练集和策略校准集，官方测试集 1,319 题全部作为留出集；MMLU 从非测试数据中分层固定选取 4,000/1,000 题，57 个学科的官方测试集 14,042 题全部作为留出集，5-shot 示例仅来自开发集。特征标准化、训练和阈值选择均未访问留出集。",
+        data_description,
         "",
         "完整推理、直接作答、固定预算、三个受控停止目标基线、修正潜力 BCE 消融及轨迹最弱点保护完整方法共享同一套完整轨迹、强制作答和隐藏状态缓存。阈值只在校准集的 101 点有限网格上选择，采用 Bonferroni 校正后的单侧 95% 二项分布同时置信上界；严格、平衡和激进工作点对应 0.5%、1% 和 2%。",
         "",
@@ -340,7 +359,7 @@ def report(root: Path, main_rows: list[dict], zh_verdict: str) -> None:
     reproducibility = "\n".join([
         "# 可复现性说明", "",
         "- 项目根目录：仓库根目录",
-        "- 实验协议：`final_paper_replay_v2`",
+        f"- 实验协议：`{scope['protocol_id'] if scope else 'final_paper_replay_v2'}`",
         "- 全局随机种子：`20260803`",
         "- 模型：冻结的 Qwen3-4B",
         "- 数据类型：FP16；不量化；每张 GPU 加载一个独立模型副本",
@@ -363,14 +382,33 @@ def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--bootstrap-repetitions", type=int, default=10000)
     parser.add_argument(
+        "--scope-manifest",
+        type=Path,
+        help="可选的固定选择层；提供后按其中的 held-out 数量执行失败即中止检查。",
+    )
+    parser.add_argument(
         "--latency-label",
         default="单请求回放估计延迟",
     )
     args = parser.parse_args()
     LATENCY_LABEL = str(args.latency_label)
     root = args.root if args.root.is_absolute() else ROOT / args.root
+    scope_path = args.scope_manifest
+    if scope_path is not None and not scope_path.is_absolute():
+        scope_path = ROOT / scope_path
+    scope = read_json(scope_path) if scope_path is not None else None
+    expected = (
+        {
+            dataset: int(scope["datasets"][dataset]["heldout_count"])
+            for dataset in DATASETS
+        }
+        if scope is not None
+        else {"gsm8k": 1319, "mmlu": 14042}
+    )
     tables = root / "tables"; tables.mkdir(parents=True, exist_ok=True)
-    all_methods = {dataset: load_methods(root, dataset) for dataset in DATASETS}
+    all_methods = {
+        dataset: load_methods(root, dataset, expected[dataset]) for dataset in DATASETS
+    }
     all_metrics: dict[str, dict[str, dict[str, Any]]] = {}
     main_rows, pairwise, subject_rows, category_rows = [], [], [], []
     for offset, dataset in enumerate(DATASETS):
@@ -403,7 +441,7 @@ def main() -> None:
     frontier = frontier_rows(root)
     write_csv(tables / "main_results.csv", main_rows)
     write_csv(tables / "gsm8k_complete_results.csv", [row for row in main_rows if row["dataset"] == "gsm8k"])
-    write_csv(tables / "mmlu_complete_results.csv", [row for row in main_rows if row["dataset"] == "mmlu"])
+    write_csv(tables / ("mmlu1k_results.csv" if scope else "mmlu_complete_results.csv"), [row for row in main_rows if row["dataset"] == "mmlu"])
     write_csv(tables / "controlled_target_baselines.csv", [row for row in main_rows if row["method"].split(":", 1)[0] in ("correctness", "consistency", "last_switch")])
     write_csv(tables / "risk_frontier.csv", frontier)
     write_csv(tables / "paired_bootstrap_differences.csv", pairwise)
@@ -420,13 +458,15 @@ def main() -> None:
         "审计会验证所有方法使用完全相同的留出集 ID，并以失败即中止的方式检查数据划分重叠和协议指纹。\n",
         encoding="utf-8",
     )
-    report(root, main_rows, zh_verdict)
+    report(root, main_rows, zh_verdict, scope)
     atomic_json({
         "status": "complete",
         "seed": 20260803,
         "bootstrap_repetitions": args.bootstrap_repetitions,
         "latency_label": LATENCY_LABEL,
         "datasets": {dataset: len(all_methods[dataset]["Dense"]) for dataset in DATASETS},
+        "scope_manifest": str(scope_path) if scope_path is not None else None,
+        "scope_fingerprint": scope.get("scope_fingerprint") if scope else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }, root / "REPORT_MANIFEST.json")
 
