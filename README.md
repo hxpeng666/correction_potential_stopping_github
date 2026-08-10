@@ -2,7 +2,7 @@
 
 这是论文实验的设备无关参考实现：冻结 `Qwen/Qwen3-4B`，在句子级检查点上使用第 20 层隐藏动态预测“继续推理后仍可能纠正”的风险，并在风险足够低时停止自由推理、只生成一次最终答案。
 
-仓库覆盖本轮最终单种子协议：完整 GSM8K official test 与覆盖 57 学科的 MMLU-1k，包含固定数据划分、Dense/Direct/强制作答公共缓存、四种停止目标、轨迹最弱点保护、有限网格风险校准、固定预算基线、回放延迟、10,000 次配对 bootstrap、表格和中文报告。
+仓库覆盖当前单种子旧经验协议：完整 GSM8K official test 与覆盖 57 学科的 MMLU-1k，包含固定数据划分、Dense/Direct/强制作答公共缓存、四种停止目标、轨迹最弱点保护、101 分位点经验风险校准、固定预算基线、回放延迟、10,000 次配对 bootstrap、表格和中英文总结。
 
 > 本发布包故意不包含特定服务器的共享任务队列、A100/2080 Ti 生产者—消费者调度、GPU 守护进程或 NAS 路径。单卡可以直接运行；多卡使用静态分片参数启动多个进程。科学协议、缓存格式和输出不随调度方式改变。
 
@@ -65,8 +65,8 @@ L = L_point + L_traj，轨迹软最小值 beta=0.5
 | 句子检查点 | 从 64 开始，最晚 768，相邻至少 8 个 token；边界为换行或 `. ! ? ;` |
 | 缓存的固定位置 | 64、96、128、192、256、384、512、768 |
 | 主表固定预算基线 | 64、96、128、192、256 |
-| GSM8K | 官方 train 中固定 2,000 个探针训练样本和 1,000 个策略校准样本；完整 official test 1,319 题 |
-| MMLU | 非 test 数据中按 57 学科分层固定 2,000 个探针训练样本和 1,000 个策略校准样本；官方 test 中按学科平衡固定 1,000 题，每科 17 或 18 题 |
+| GSM8K | 官方 train 中固定 1,000 个探针训练样本和 500 个策略校准样本；完整 official test 1,319 题 |
+| MMLU | 非 test 数据中按 57 学科分层固定 1,000 个探针训练样本和 500 个策略校准样本；official test 中按学科平衡固定 1,000 题，每科 17 或 18 题 |
 | MMLU 提示 | 每个学科使用 dev 中的标准 5-shot 示例 |
 
 每个生成任务的随机种子只由下列键决定，不依赖启动时间、GPU、工作进程或分片：
@@ -75,10 +75,10 @@ L = L_point + L_traj，轨迹软最小值 beta=0.5
 (global_seed, dataset, split, sample_id, checkpoint)
 ```
 
-配置文件：
+当前结果配置文件：
 
-- `configs/final_paper_single_seed_gsm8k_fp16.yaml`
-- `configs/final_paper_single_seed_mmlu1k_fp16.yaml`
+- `configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml`
+- `configs/final_paper_legacy_v4_existing_fp16_mmlu.yaml`
 
 这里的 MMLU 结果必须写作 **MMLU-1k**，不能写作完整 MMLU test。选择过程只依赖固定 seed、学科和 sample ID，不读取模型输出、正确率、轨迹长度或延迟。
 采用 1,000 题的同类工作依据、统计限制与报告边界见 [MMLU-1k 协议说明](docs/MMLU_1K_PROTOCOL.md)。
@@ -137,12 +137,12 @@ python scripts/prepare_final_paper_data.py \
 
 注意：GSM 快照参数应指向包含 `main/` 的修订版本根目录。
 
-第一个脚本写出不可变父数据与完整 ID 清单；第二个脚本在其上生成本轮选择层：
+第一个脚本写出不可变父数据与完整 ID 清单；第二个脚本验证仓库内冻结 ID，并写出本轮选择层：
 
 ```text
 data/final_paper_replay_v2/{gsm8k,mmlu}/
 results/final_paper_replay_v2/splits/{gsm8k,mmlu}_split.json
-splits/final_paper_single_seed_mmlu1k_v1/
+splits/legacy_empirical_v4_train1000_cal500_mmlu1k/
 ├── scope_manifest.json
 ├── audit_selection.json
 └── {gsm8k,mmlu}_{probe_train,calibration,heldout}_ids.json
@@ -150,7 +150,7 @@ splits/final_paper_single_seed_mmlu1k_v1/
 
 仓库的 `splits/` 同时保存本次论文协议实际使用的固定清单。重新运行选择层必须得到相同指纹和 ID；任何路由或排序漂移都应使检查失败，而不能静默产生另一套样本。服务器本轮运行清单已与仓库清单逐 ID 比较，六个 dataset/split 组合完全一致。
 
-MMLU 固定快照中的 `auxiliary_train.subject` 为空。父协议先使用 dev 和 validation 问题的 TF-IDF 中心，对去重后的辅助训练问题执行确定性学科路由，再构造 4,000/1,000 父划分；本轮从每科父 probe 固定前缀中平衡取 2,000 题。MMLU-1k 在每科 official test 内按 `sha256(seed,dataset,split,problem_id)` 排序，前 31 科各取 18 题，其余 26 科各取 17 题。test 标签从不参与路由或选择。
+MMLU 固定快照中的 `auxiliary_train.subject` 为空。父协议使用 dev/validation 问题的 TF-IDF 中心对去重后的辅助训练问题执行确定性学科路由；本轮从父清单冻结为按 57 学科分层的 1,000 个 probe 和 500 个 calibration。MMLU-1k 在每科 official test 内固定选择 17 或 18 题。六个精确 ID 清单随仓库发布，重新运行选择脚本必须逐项一致。MMLU calibration 来自 `auxiliary_train`，相对 official test 存在明确分布偏移，结果必须标记为 distribution-shift；test 标签从不参与路由、训练或阈值选择。
 
 ## 5. 公共缓存格式
 
@@ -176,7 +176,7 @@ cache/<数据集>/
 ```bash
 python scripts/collect_final_paper_dense_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
   --split-manifest results/final_paper_replay_v2/splits/gsm8k_split.json \
   --split calibration \
   --cache-root results/final_paper_replay_v2/cache/gsm8k \
@@ -185,7 +185,7 @@ python scripts/collect_final_paper_dense_cache.py \
 
 python scripts/collect_final_paper_branch_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
   --split calibration \
   --cache-root results/final_paper_replay_v2/cache/gsm8k \
   --gpu 0 --resume
@@ -202,8 +202,8 @@ python scripts/audit_final_paper_replay_cache.py \
   --cache-base results/final_paper_replay_v2/cache \
   --mode smoke \
   --selection results/final_paper_replay_v2/selections/smoke_selection.json \
-  --gsm8k-config configs/final_paper_single_seed_gsm8k_fp16.yaml \
-  --mmlu-config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
+  --gsm8k-config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
+  --mmlu-config configs/final_paper_legacy_v4_existing_fp16_mmlu.yaml \
   --splits-root results/final_paper_replay_v2/splits \
   --output results/final_paper_replay_v2/SMOKE_CACHE_AUDIT.json
 ```
@@ -219,26 +219,26 @@ python scripts/audit_final_paper_replay_cache.py \
 ```bash
 python scripts/collect_final_paper_dense_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
   --split-manifest splits/gsm8k_split.json \
   --split heldout \
-  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
-  --sample-ids splits/final_paper_single_seed_mmlu1k_v1/gsm8k_heldout_ids.json \
+  --cache-root results/legacy_empirical_v4/cache/gsm8k \
+  --sample-ids splits/legacy_empirical_v4_train1000_cal500_mmlu1k/gsm8k_heldout_ids.json \
   --gpu 0 --resume
 
 python scripts/collect_final_paper_branch_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
   --split heldout \
-  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
+  --cache-root results/legacy_empirical_v4/cache/gsm8k \
   --gpu 0 --resume
 
 python scripts/merge_final_paper_replay_cache.py \
-  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
+  --cache-root results/legacy_empirical_v4/cache/gsm8k \
   --split heldout --resume
 ```
 
-对 `probe_train` 和 `calibration` 重复时替换 split 与对应 ID 文件。MMLU 使用 `configs/final_paper_single_seed_mmlu1k_fp16.yaml` 和 `mmlu_<split>_ids.json`。分支采集读取已经存在的 Dense 文件，因此不再接收 ID 文件。
+对 `probe_train` 和 `calibration` 重复时替换 split 与对应 ID 文件。MMLU 使用 `configs/final_paper_legacy_v4_existing_fp16_mmlu.yaml` 和冻结目录中的 `mmlu_<split>_ids.json`。分支采集读取已经存在的 Dense 文件，因此不再接收 ID 文件。
 
 ### 多卡静态分片
 
@@ -260,13 +260,13 @@ python scripts/collect_final_paper_dense_cache.py ... \
 
 ```bash
 python scripts/audit_final_paper_replay_cache.py \
-  --cache-base results/final_paper_single_seed_mmlu1k_v1/cache \
+  --cache-base results/legacy_empirical_v4/cache \
   --mode formal \
-  --selection splits/final_paper_single_seed_mmlu1k_v1/audit_selection.json \
-  --gsm8k-config configs/final_paper_single_seed_gsm8k_fp16.yaml \
-  --mmlu-config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
+  --selection results/legacy_empirical_v4/splits/audit_selection.json \
+  --gsm8k-config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
+  --mmlu-config configs/final_paper_legacy_v4_existing_fp16_mmlu.yaml \
   --splits-root splits \
-  --output results/final_paper_single_seed_mmlu1k_v1/CACHE_AUDIT.json
+  --output results/legacy_empirical_v4/CACHE_INTEGRITY_AND_LEAKAGE_AUDIT.json
 ```
 
 审计包括样本完整性、数据划分泄漏、57 学科覆盖、配置指纹、token 长度、hidden 中的 NaN/Inf、记录与向量对齐、重复或缺失检查点、Direct 和强制作答分支，以及五元组随机种子。
@@ -276,14 +276,14 @@ python scripts/audit_final_paper_replay_cache.py \
 时间校准和策略校准是两个不同概念：
 
 - **时间校准**：只拟合目标部署 GPU 的上下文长度—生成成本；不训练停止器，也不选择停止阈值。
-- **策略校准**：使用 1,000 个 calibration 问题选择满足风险约束的阈值；不拟合硬件速度。
+- **策略校准**：使用 500 个 calibration 问题按历史经验 lost-correct 绝对预算选择阈值；不拟合硬件速度。
 
 准备脚本已固定选择 200 个 GSM8K probe-train 问题，以及 MMLU 每个学科 8 个、共 456 个 probe-train 问题。使用目标部署 GPU、单请求、预热、FP16、SDPA 和 `--measure-timing`，写入独立缓存；不能使用分支工作进程的时间：
 
 ```bash
 python scripts/collect_final_paper_dense_cache.py \
   --dataset gsm8k \
-  --config configs/final_paper_replay_v2_gsm8k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
   --split-manifest results/final_paper_replay_v2/splits/gsm8k_split.json \
   --split probe_train \
   --cache-root results/final_paper_replay_v2/timing_cache/gsm8k \
@@ -292,7 +292,7 @@ python scripts/collect_final_paper_dense_cache.py \
 
 python scripts/collect_final_paper_dense_cache.py \
   --dataset mmlu \
-  --config configs/final_paper_single_seed_mmlu1k_fp16.yaml \
+  --config configs/final_paper_legacy_v4_existing_fp16_mmlu.yaml \
   --split-manifest results/final_paper_replay_v2/splits/mmlu_split.json \
   --split probe_train \
   --cache-root results/final_paper_replay_v2/timing_cache/mmlu \
@@ -324,11 +324,11 @@ python scripts/benchmark_final_paper_stopper.py \
 ```bash
 python scripts/materialize_final_paper_replay_view.py \
   --dataset gsm8k \
-  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
-  --cache-root results/final_paper_single_seed_mmlu1k_v1/cache/gsm8k \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
+  --cache-root results/legacy_empirical_v4/cache/gsm8k \
   --cost-model results/final_paper_replay_v2/single_request_cost_model.json \
   --probe-overhead-ms <平均毫秒数> \
-  --output-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
+  --output-root results/legacy_empirical_v4/replay/gsm8k \
   --resume
 ```
 
@@ -345,12 +345,12 @@ A100-SXM4-80GB 单请求回放估计延迟
 先计算 Dense、Direct 和固定预算基线：
 
 ```bash
-python scripts/evaluate_final_paper_baselines.py \
+python scripts/evaluate_legacy_empirical_baselines_v4.py \
   --dataset gsm8k \
-  --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
-  --dense-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
-  --checkpoint-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/baselines \
+  --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
+  --dense-root results/legacy_empirical_v4/replay/gsm8k \
+  --checkpoint-root results/legacy_empirical_v4/replay/gsm8k \
+  --output results/legacy_empirical_v4/gsm8k/baselines \
   --resume
 ```
 
@@ -358,68 +358,67 @@ python scripts/evaluate_final_paper_baselines.py \
 
 ```bash
 # 受控预测目标：仅使用检查点 BCE
-python scripts/train_final_paper_probe.py \
-  --dataset gsm8k --config configs/final_paper_single_seed_gsm8k_fp16.yaml \
-  --raw-root results/final_paper_single_seed_mmlu1k_v1/replay/gsm8k \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correctness \
+python scripts/train_legacy_empirical_probe_v4.py \
+  --dataset gsm8k --config configs/final_paper_legacy_v4_existing_fp16_gsm8k.yaml \
+  --raw-root results/legacy_empirical_v4/replay/gsm8k \
+  --output results/legacy_empirical_v4/gsm8k/probes/correctness \
   --method correctness --loss bce --schedule sentence --layer 20 \
-  --feature-kind full --seed 20260803 --gpu 0 --resume
+  --feature-kind full --seed 0 --gpu 0 --resume
 
-python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/consistency \
+python scripts/train_legacy_empirical_probe_v4.py ... \
+  --output results/legacy_empirical_v4/gsm8k/probes/consistency \
   --method consistency --loss bce
 
-python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/last_switch \
+python scripts/train_legacy_empirical_probe_v4.py ... \
+  --output results/legacy_empirical_v4/gsm8k/probes/last_switch \
   --method last_switch --loss bce
 
 # 损失函数消融
-python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correction_bce \
+python scripts/train_legacy_empirical_probe_v4.py ... \
+  --output results/legacy_empirical_v4/gsm8k/probes/correction_bce \
   --method correction --loss bce
 
 # 主方法
-python scripts/train_final_paper_probe.py ... \
-  --output results/final_paper_single_seed_mmlu1k_v1/gsm8k/probes/correction_trajectory \
+python scripts/train_legacy_empirical_probe_v4.py ... \
+  --output results/legacy_empirical_v4/gsm8k/probes/correction_trajectory \
   --method correction --loss bce_traj
 ```
 
 将 `gsm8k` 换为 `mmlu` 后完整重复。正确性、一致性和最后切换是同一框架中的受控停止目标基线，不是对其他论文全部训练细节的官方复现。
 
-`StandardScaler` 只在 probe-train 内部固定的 80% 拟合问题上训练。早停也只查看 probe-train 内部验证集；包含 1,000 个问题的策略校准集仅在训练完成后扫描 101 点有限阈值网格。严格、平衡和激进工作点分别要求同时成立的单侧 95% 二项分布上界不超过 0.5%、1% 和 2%；如果没有非禁用策略满足约束，则自动选择 Dense fallback。
+`StandardScaler` 只在 probe-train 内部固定的 80% 拟合问题上训练，20% 仅用于 epoch 选择。训练完成后在 500 个 calibration 问题上扫描 101 个 score 分位点，并加入完全不停止的 sentinel。历史主协议使用 calibration lost-correct 的绝对数量预算 `B={0,1,2,4,10}`；Strict、Balanced、Aggressive 分别是 `B=1,2,4`。它们是经验事件预算，不是二项分布置信上界。另行报告 30%–90% calibration coverage-targeted 工作点；held-out 从不选择阈值。
 
 ## 10. 汇总、配对 bootstrap 与报告
 
 两个数据集的基线和探针目录完成后：
 
 ```bash
-python scripts/compile_final_paper_replay_v2.py \
-  --root results/final_paper_single_seed_mmlu1k_v1 \
-  --scope-manifest splits/final_paper_single_seed_mmlu1k_v1/scope_manifest.json \
-  --bootstrap-repetitions 10000 \
-  --latency-label 'A100-SXM4-80GB 单请求回放估计延迟'
+python scripts/compile_legacy_empirical_results_v4.py \
+  --run-root results/legacy_empirical_v4 \
+  --cache-audit results/legacy_empirical_v4/CACHE_INTEGRITY_AND_LEAKAGE_AUDIT.json \
+  --bootstrap-samples 10000 \
+  --bootstrap-seed 20260803
 ```
 
 编译器会验证所有方法使用相同 held-out sample IDs，产生：
 
 ```text
-results/final_paper_single_seed_mmlu1k_v1/
+results/legacy_empirical_v4/
 ├── tables/
 │   ├── main_results.csv
-│   ├── gsm8k_complete_results.csv
-│   ├── mmlu1k_results.csv
-│   ├── controlled_target_baselines.csv
-│   ├── trajectory_protection_ablation.csv
-│   ├── paired_bootstrap_differences.csv
+│   ├── historical_empirical_B.csv
+│   ├── coverage_targeted.csv
+│   ├── target_ablation.csv
+│   ├── loss_ablation.csv
+│   ├── bootstrap_confidence_intervals.csv
+│   ├── paired_comparisons.csv
 │   ├── risk_frontier.csv
 │   ├── mmlu_subject_results.csv
 │   └── mmlu_category_results.csv
 ├── figures/
-├── FINAL_PAPER_REPORT.md
-├── FINAL_PAPER_REPORT_ZH.md
-├── REPRODUCIBILITY.md
-├── VERDICT.json
-└── REPORT_MANIFEST.json
+├── FINAL_EXPERIMENT_SUMMARY_ZH.md
+├── FINAL_EXPERIMENT_SUMMARY_EN.md
+└── pipeline.complete
 ```
 
 每次 bootstrap 都对全部方法重采样相同的问题 ID，报告准确率、token 减少率、平均和 p95 回放延迟减少率、lost-correct 风险与覆盖率的 95% 置信区间，以及主方法相对各基线的配对差值置信区间。不使用 `C→W` 抵消 `W→C` 风险。
@@ -441,7 +440,10 @@ python scripts/audit_environment.py \
 - `src/final_paper_cache.py`：五元组随机种子、配置指纹、公共缓存路径与句子边界；
 - `src/qwen3_reasoning.py`：冻结 Qwen3、采样、Dense 轨迹与 CUDA 计时；
 - `src/final_paper_inference.py`：提示、GSM/MMLU 判分、hidden hook 和强制作答；
-- `src/final_paper_probe.py`：5,126 维特征、MLP、四种标签、轨迹损失、风险校准与回放；
+- `src/final_paper_probe.py`：通用 5,126 维特征、MLP 和标签实现；
+- `src/legacy_empirical_probe_v4.py`：本轮加权 Correction loss、trajectory soft-min、历史经验 B 校准和 first-hit 回放；
+- `scripts/train_legacy_empirical_probe_v4.py`：统一训练 Correctness、Consistency、Last-switch、Correction BCE 与完整方法；
+- `scripts/compile_legacy_empirical_results_v4.py`：历史 B/coverage 表、配对 bootstrap、MMLU 分解和中英文总结；
 - `src/final_paper_online.py`：可选的不依赖答案探针的句子级在线参考实现；论文主表不依赖完整策略的在线计时。
 
 ## 13. 可复现性规则

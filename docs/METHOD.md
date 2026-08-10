@@ -39,9 +39,11 @@ MLP 结构为 `5126→384→96→1`。第一层线性层后使用 LayerNorm，�
 
 ## 风险校准
 
-阈值网格由 101 个 calibration 分数分位点和一个明确禁用策略的阈值组成。每个阈值都以轨迹为单位回放，并选择第一个满足停止条件的检查点。
+阈值网格由 101 个 calibration 分数分位点和一个完全不提前停止的 sentinel 组成。每个阈值都以轨迹为单位回放，并选择第一个满足停止条件的检查点。
 
-单侧 95% Clopper–Pearson 上界使用有限网格 Bonferroni 校正。严格、平衡和激进工作点的风险上界分别为 0.5%、1% 和 2%。在满足约束的阈值中选择 calibration replay latency 最低者。held-out 指标不参与阈值选择。
+当前论文主协议使用 calibration lost-correct 的历史经验绝对预算 `B={0,1,2,4,10}`。对每个 B，在 `W→C count<=B` 的阈值中选择 calibration replay latency 最低者；并依次以 token reduction 和 coverage 作为平局判据。Strict、Balanced、Aggressive 分别是 B=1、2、4。B 是有限 calibration 集上的经验事件数，不是总体风险的置信上界。Bonferroni/Clopper–Pearson 代码如保留，只能作为 `formal-certified-*` 补充结果，不能替代或混写当前主协议。
+
+另行在同一阈值曲线上选择 calibration coverage 最接近 30%、40%、50%、60%、70%、80%、90% 的工作点。held-out coverage 无需等于 calibration 目标，held-out 指标从不参与阈值或 epoch 选择。
 
 ## 缺少合法检查点
 
