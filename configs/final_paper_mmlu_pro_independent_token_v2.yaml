@@ -1,0 +1,88 @@
+primary: true
+runnable: true
+status: frozen_independent_split_token_primary
+protocol_id: cps_qwen3_4b_fp16_sentence_empiricalB_mmlupro_test_train1000_cal500_test1000_token_v2
+report_label: MMLU-Pro 1000/500/1000 独立同源划分（token 主指标）
+seed:
+  global: 20260803
+  dataset_sampling: 20260803
+  internal_split: 0
+  probe_initialization: 0
+  bootstrap: 20260803
+dataset:
+  name: TIGER-Lab/MMLU-Pro
+  prepared_root: data/final_paper_mmlu_pro_independent_token_v2
+  split_manifest: splits/mmlu_pro_independent_split.json
+  collection_file: all_selected.jsonl
+  source_split: test
+  probe_train_count: 1000
+  policy_calibration_count: 500
+  final_test_count: 1000
+  demonstrations_split: validation
+  demonstrations_per_category: 5
+  stratification: category_x_global_length_quartile
+  old_reuse_count: 800
+  old_split_manifest: results/final_paper_mmlu_pro_learnstop_style_v1/splits/mmlu_pro_learnstop_style_split.json
+  old_replay_root: results/final_paper_mmlu_pro_learnstop_style_v1/replay_view/heldout
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [20]
+checkpoint_protocol:
+  primary_schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+  boundary_regex: "\\n+|[.!?;]+(?:[\"')\\]]*)?(?=\\s|$)"
+prompt:
+  system: "Answer the multiple-choice question. Think step by step, then end with exactly one boxed option letter such as \\boxed{A}."
+  demonstrations_include_reasoning: false
+features:
+  primary_layer_zero_based: 20
+  hidden_size: 2560
+  input_width: 5126
+probe:
+  architecture: [5126, 384, 96, 1]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  correction_positive_weight: 1.5
+  correction_negative_weight: 1_plus_remaining
+  trajectory_softmin_beta: 0.5
+calibration:
+  threshold_quantiles: 101
+  selection: first_hit
+  optimization_metric: mean_reasoning_and_answer_tokens
+  empirical_lost_correct_B: [0, 1, 2, 4, 10]
+  named_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  formal_certified_is_supplement_only: true
+replay:
+  label: token-only replay（不测量延迟）
+  latency_enabled: false
+  selection_metric: tokens
+statistics:
+  bootstrap_replicates: 10000
+  unit: category_stratified_problem
+output_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000

@@ -1,0 +1,26 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_dynamic_risk_constrained_token_cost_v1_smoke
+seed: {global: 20260803, probe_initialization: 0, internal_split: 0, bootstrap: 20260803}
+probe:
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 4
+  gradient_clip: 2.0
+  max_epochs: 1
+  patience: 1
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+dynamic_policy:
+  cost_unit_tokens: 4096
+  lambda_grid: [0.0, 0.2]
+  mu_grid: [0.0, 1.0]
+  formal_alpha: [0.05]
+  formal_delta: 0.05
+  empirical_B: [0, 1]
+  accuracy_epsilon: 0.01
+datasets:
+  gsm8k: {probe_train: 8, calibration: 8, heldout: 8}
+  mmlu_pro: {probe_train: 8, calibration: 8, heldout: 8}

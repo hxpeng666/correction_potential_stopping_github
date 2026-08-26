@@ -34,7 +34,8 @@ prompt:
   user_template: "Problem: {question}"
 cache:
   root: results/final_paper_replay_v2/cache/gsm8k
-  latency_label: 单请求回放估计延迟
+  queue_root: results/final_paper_replay_v2/queue
+  latency_label: A100 replay-estimated latency
 probe:
   architecture: [5126, 384, 96, 1]
   learning_rate: 0.0002
@@ -45,7 +46,6 @@ probe:
   patience: 6
   trajectory_softmin_beta: 0.5
   seed: 20260803
-  seeds: [20260803]
 calibration:
   quantile_grid_size: 101
   confidence: 0.95

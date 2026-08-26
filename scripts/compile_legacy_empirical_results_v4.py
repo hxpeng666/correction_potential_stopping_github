@@ -220,12 +220,12 @@ def report_text(dataset: str, rows: pd.DataFrame, source_audit: dict[str, Any], 
     dtype_name = {"float16": "FP16", "bfloat16": "BF16"}.get(raw_dtype, raw_dtype.upper())
     reused = bool(source_audit.get("generation_reused", False))
     if chinese:
-        lines += [f"# {dataset.upper()} 旧经验协议实验总结", "", "## 协议", "",
-                  f"本结果使用单 seed、{dtype_name} Qwen3-4B、SDPA、pure sentence-step checkpoint，以及 calibration 上的绝对 lost-correct 预算 B。{'Dense/hidden/forced-answer来自用户批准复用的现有公共缓存。' if reused else ''}所有延迟均为冻结成本模型给出的 `A100 single-request replay-estimated latency`，不是完整在线实测。", "",
+        lines += [f"# {dataset.upper()} 论文主经验 B 协议实验总结", "", "## 协议", "",
+                  f"本结果使用单 seed、{dtype_name} Qwen3-4B、SDPA、pure sentence-step checkpoint，以及 calibration 上的绝对 lost-correct 预算 B。{'Dense/hidden/forced-answer来自用户批准复用的现有公共缓存。' if reused else ''}所有延迟均为冻结成本模型给出的 `A100 single-request replay-estimated latency`，不是完整在线实测；主表累计 token sampling、自适应 top-20 entropy、逐 token sentence-boundary 检查，以及逐 checkpoint hidden/entropy-tail/scaler/MLP/阈值比较开销。", "",
                   "Strict、Balanced、Aggressive 分别表示 B=1、2、4；它们是经验事件预算，不是总体风险的置信上界。held-out 只应用冻结阈值，不参与阈值或 epoch 选择。", "", "## 主方法", ""]
     else:
-        lines += [f"# {dataset.upper()} Legacy Empirical Protocol Summary", "", "## Protocol", "",
-                  f"This single-seed experiment uses {dtype_name} Qwen3-4B, SDPA, pure sentence-step checkpoints, and absolute calibration lost-correct budgets B. {'Dense/hidden/forced-answer artifacts are reused from the user-approved existing shared cache. ' if reused else ''}Every latency number is `A100 single-request replay-estimated latency` from the frozen cost model, not measured end-to-end policy latency.", "",
+        lines += [f"# {dataset.upper()} Primary Empirical-B Protocol Summary", "", "## Protocol", "",
+                  f"This single-seed experiment uses {dtype_name} Qwen3-4B, SDPA, pure sentence-step checkpoints, and absolute calibration lost-correct budgets B. {'Dense/hidden/forced-answer artifacts are reused from the user-approved existing shared cache. ' if reused else ''}Every latency number is `A100 single-request replay-estimated latency` from the frozen cost model, not measured end-to-end policy latency; the primary table accumulates token sampling, adaptive top-20 entropy and sentence-boundary checks, plus per-checkpoint hidden/entropy-tail/scaler/MLP/threshold overhead.", "",
                   "Strict, Balanced, and Aggressive mean B=1, 2, and 4. They are empirical event budgets, not population-level confidence bounds. Held-out data is applied once after threshold freezing.", "", "## Main method", ""]
     for _, row in aliases.iterrows():
         alias = ALIASES[int(row.budget_B)]
@@ -237,7 +237,7 @@ def report_text(dataset: str, rows: pd.DataFrame, source_audit: dict[str, Any], 
     if dataset == "mmlu":
         cal_sources = source_audit["checks"]["mmlu"]["calibration"]["source_counts"]
         if chinese:
-            lines.append(f"MMLU calibration 来源：{json.dumps(cal_sources, ensure_ascii=False)}。57 学科均有覆盖；test 为57学科分层的1000题。")
+            lines.append(f"MMLU calibration 来源：{json.dumps(cal_sources, ensure_ascii=False)}。57 学科均有覆盖；test 为57学科分层的1000题。该结果统一命名为 `MMLU-1k distribution-shift`。")
             if source_audit.get("mmlu_distribution_shift", {}).get("present"):
                 lines.append("该结果存在明确的calibration/test来源偏移，必须解释为distribution-shift结果；test没有用于重新选择阈值。")
         else:

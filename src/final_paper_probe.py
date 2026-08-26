@@ -1,4 +1,4 @@
-"""最终论文实验的探针特征、损失函数、轨迹回放与风险校准。"""
+"""Final-paper probe features, losses, trajectory replay, and risk calibration."""
 from __future__ import annotations
 
 import hashlib
@@ -25,11 +25,11 @@ FEATURE_KINDS = (
     "full_no_entropy",
     "full_no_position",
 )
-SCHEDULES = ("fixed", "sentence")
+SCHEDULES = ("fixed", "sentence", "hybrid")
 
 
 class FinalPaperProbe(nn.Module):
-    """预注册的标量输出 5126→384→96→1 MLP（或消融后的输入宽度）。"""
+    """The preregistered scalar 5126->384->96->1 MLP (or ablated input width)."""
 
     def __init__(self, width: int):
         super().__init__()
@@ -49,15 +49,10 @@ class FinalPaperProbe(nn.Module):
 
 
 def _fallback_record(artifact: dict[str, Any]) -> dict[str, Any]:
-    # 论文发布用的回放视图是自包含的；为保持向后兼容，仍支持加载旧版的
-    # 独立检查点产物。
-    if "dense" in artifact and "record" in artifact:
-        source = artifact
-    else:
-        source_path = Path(artifact["source_dense_artifact"])
-        if not source_path.is_absolute():
-            source_path = PROJECT_ROOT / source_path
-        source = torch.load(source_path, map_location="cpu", weights_only=False)
+    source_path = Path(artifact["source_dense_artifact"])
+    if not source_path.is_absolute():
+        source_path = PROJECT_ROOT / source_path
+    source = torch.load(source_path, map_location="cpu", weights_only=False)
     dense = source["dense"]
     return {
         "problem_id": str(source["problem_id"]),
@@ -88,16 +83,8 @@ def _artifact_rows(
         if schedule in row.get("checkpoint_schedules", [])
     ]
     fallback = _fallback_record(artifact) if not selected else None
-    selected_rows = []
-    for index in selected:
-        row = dict(rows[index])
-        overhead_key = f"probe_cumulative_{schedule}_ms"
-        if overhead_key not in row:
-            raise ValueError(f"missing {overhead_key} in {path}")
-        row["probe_cumulative_replay_ms"] = float(row[overhead_key])
-        selected_rows.append(row)
     return (
-        selected_rows,
+        [rows[index] for index in selected],
         hidden[selected].float(),
         [int(value) for value in artifact["capture_layers"]],
         fallback,
@@ -108,7 +95,7 @@ def load_checkpoint_split(
     directory: Path,
     schedule: str,
 ) -> tuple[pd.DataFrame, np.ndarray, list[int], list[dict[str, Any]]]:
-    """加载可评分检查点，以及明确只能回退到完整推理的问题。"""
+    """Load scorable checkpoints plus explicit Dense-only fallback problems."""
     if schedule not in SCHEDULES:
         raise ValueError(f"unknown schedule: {schedule}")
     paths = sorted(directory.glob("sample_*.pt"))
@@ -163,7 +150,7 @@ def _last_switch_flags(current: list[str], dense: str) -> list[bool]:
 
 
 def add_targets(frame: pd.DataFrame) -> pd.DataFrame:
-    """添加四种受控目标，并且不把两个缺失答案视为一致。"""
+    """Add the four controlled targets without treating two missing answers as consistent."""
     result = frame.copy()
     result["target_last_switch"] = False
     for _, group in result.groupby("problem_id", sort=False):
@@ -221,7 +208,7 @@ def build_features(
     layer: int = 20,
     feature_kind: str = "full",
 ) -> np.ndarray:
-    """构造指定层的隐藏动态特征；完整特征恰好为 5126 列。"""
+    """Build layer-specific hidden-dynamics features; full has exactly 5126 columns."""
     if feature_kind not in FEATURE_KINDS:
         raise ValueError(feature_kind)
     if layer not in capture_layers:
@@ -286,7 +273,7 @@ def fit_validation_masks(
     fraction: float = 0.8,
     seed: int = 20260803,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """固定的问题级划分；MMLU 按学科分层。"""
+    """Fixed problem-level split; MMLU is stratified by subject."""
     fit_ids: set[str] = set()
     grouping: Iterable[tuple[Any, pd.DataFrame]]
     if dataset == "mmlu":
@@ -305,8 +292,9 @@ def fit_validation_masks(
         fit_ids.update(ordered[:cut])
     fit = frame.problem_id.astype(str).isin(fit_ids).to_numpy()
     validation = ~fit
-    # 极小的多学科链路检查划分可能每个学科只有一道题。正式 MMLU 保持学科分层；
-    # 当每一层都只有一个样本时，则回退到相同的固定问题级哈希划分。
+    # A deliberately tiny multi-subject smoke split can contain one problem per
+    # subject. Preserve subject stratification for formal MMLU, but fall back
+    # to the same fixed problem-level hash when every stratum is a singleton.
     if not validation.any():
         ids = sorted(frame.problem_id.astype(str).unique())
         ordered = sorted(
@@ -351,7 +339,7 @@ def correction_loss(
     beta: float = 0.5,
     trajectory: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """检查点损失加可选的逐 W→C 轨迹 beta 软最小值保护。"""
+    """L_point plus optional beta-soft-min protection over each W->C trajectory."""
     point_terms = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
     weights = torch.where(
         target > 0.5,
@@ -465,7 +453,6 @@ def simulate_policy(
     *,
     include_records: bool = False,
     fallback_records: list[dict[str, Any]] | None = None,
-    disabled: bool = False,
 ) -> dict[str, Any]:
     if len(frame) != len(scores):
         raise ValueError("frame/score mismatch")
@@ -475,7 +462,7 @@ def simulate_policy(
     for problem_id, group in scored.groupby("problem_id", sort=False):
         ordered = group.sort_values("checkpoint")
         first = ordered.iloc[0]
-        eligible = ordered.iloc[0:0] if disabled else (
+        eligible = (
             ordered[ordered.score >= threshold]
             if direction == "high"
             else ordered[ordered.score <= threshold]
@@ -485,13 +472,6 @@ def simulate_policy(
             current_success = bool(first.dense_success)
             method_tokens = int(first.dense_tokens)
             replay_wall_ms = float(first.dense_wall_ms)
-            if not disabled:
-                replay_wall_ms += float(
-                    ordered.get(
-                        "probe_cumulative_replay_ms",
-                        pd.Series([0.0]),
-                    ).max()
-                )
             checkpoint = None
             transition = "fallback"
             prediction = first.dense_prediction
@@ -506,7 +486,6 @@ def simulate_policy(
                 chosen.dense_prefill_cuda_ms
                 + chosen.prefix_decode_cuda_ms
                 + chosen.branch_wall_ms
-                + float(chosen.get("probe_cumulative_replay_ms", 0.0))
             )
             checkpoint = int(chosen.checkpoint)
             transition = transition_name(current_success, bool(chosen.dense_success))
@@ -556,7 +535,6 @@ def simulate_policy(
         seen.add(base["problem_id"])
     summary = _summarize_policy_records(records)
     summary["threshold"] = float(threshold)
-    summary["disabled"] = bool(disabled)
     if include_records:
         summary["records"] = records
     return summary
@@ -567,7 +545,7 @@ def threshold_grid(
     direction: str,
     grid_size: int = 101,
 ) -> list[tuple[float, bool]]:
-    """返回有限校准网格，其中恰好包含一个禁用停止的策略。"""
+    """Return a finite calibration grid including exactly one disabled policy."""
     if grid_size < 2:
         raise ValueError("threshold grid must contain at least two values")
     quantiles = np.quantile(scores, np.linspace(0.0, 1.0, grid_size - 1))
@@ -587,7 +565,7 @@ def binomial_upper_simultaneous(
     confidence: float,
     grid_size: int,
 ) -> float:
-    """使用有限网格 Bonferroni 校正的单侧 Clopper–Pearson 上界。"""
+    """One-sided Clopper-Pearson bound with finite-grid Bonferroni correction."""
     if trials <= 0:
         raise ValueError("trials must be positive")
     if events < 0 or events > trials:
@@ -616,7 +594,6 @@ def calibration_curve(
             direction,
             threshold,
             fallback_records=fallback_records,
-            disabled=disabled,
         )
         row["grid_index"] = index
         row["disabled"] = bool(disabled)
@@ -742,7 +719,7 @@ def simulate_fixed_budget(
     *,
     include_records: bool = False,
 ) -> dict[str, Any]:
-    """使用相同的强制作答分支缓存回放固定令牌预算。"""
+    """Replay a fixed-token budget using the same cached forced-answer branches."""
     records: list[dict[str, Any]] = []
     for problem_id, group in frame.groupby("problem_id", sort=False):
         ordered = group.sort_values("checkpoint")
@@ -798,7 +775,7 @@ def simulate_fixed_budget(
 
 
 def summarize_policy_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """供固定预算、直接作答基线和 Bootstrap 脚本共用的汇总函数。"""
+    """Public summary helper for fixed/direct baseline and bootstrap scripts."""
     return _summarize_policy_records(records)
 
 
@@ -811,7 +788,7 @@ def build_online_feature(
     entropy_tail8: float,
     feature_kind: str = "full",
 ) -> np.ndarray:
-    """按照与离线阶段完全一致的顺序构造一条可部署特征向量。"""
+    """Construct one deployable feature vector with the exact offline ordering."""
     current = np.asarray(current, dtype=np.float32).reshape(1, -1)
     if current.shape[1] != 2560:
         raise ValueError(f"online hidden width must be 2560, got {current.shape[1]}")

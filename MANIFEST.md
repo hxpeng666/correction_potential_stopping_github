@@ -1,25 +1,25 @@
-# 发布包文件说明
+# 发布内容清单
 
-## 已收录内容
+## 收录
 
-- 冻结 Qwen3 的加载、解码、隐藏状态提取、熵计算和答案解析代码。
-- GSM8K 与 MMLU 数据准备代码，以及本轮 2k/1k/完整 GSM8K/MMLU-1k 固定选择层。
-- 标准 MMLU 5-shot 提示和 57 个学科及四大类别的映射。
-- 与设备无关的不可变公共缓存格式和确定性任务随机种子。
-- 适用于单张或多张 CUDA GPU 的静态样本及任务分片。
-- Direct 和强制作答分支采集、缓存合并及失败即停止的完整性审计。
-- 第 20 层隐藏动态特征、固定 MLP、受控预测目标、轨迹损失、阈值校准和轨迹回放。
-- 单请求时间校准、验证、停止器开销测量和派生成本视图。
-- Dense、Direct、固定预算基线、配对 bootstrap、学科及类别表格、图形和中文结果报告。
-- 单元测试及完整复现说明。
-- MMLU-1k 的 57 学科均衡哈希选择器、逐 split ID 文件和 scope 指纹。
+- Qwen3-4B 与 DeepSeek-R1-Distill-Qwen-7B 的冻结科学配置；
+- GSM8K、MMLU/MMLU-Pro、Hendrycks MATH、MATH-500、AIME 2024 的问题级准备与验证逻辑；
+- Dense rollout、paragraph/sentence/fixed/prefix/cue/hybrid checkpoint、greedy forced-answer 采集；
+- correctness、consistency、last-switch、correction BCE、normalized trajectory 五组 probe；
+- layer、feature、checkpoint schedule、suffix、fixed-budget 和 dynamic stopping 消融；
+- LTS、LYNX、self-verification、Thought Calibration 的 native 与 paragraph 复现；
+- 经验 B、accuracy-floor、coverage、formal LTT/conformal 校准研究；
+- 13K 到 selective-32K 的精确增量迁移及审计；
+- fixed relative-budget frontier、OOD 复用评测、bootstrap、审计和汇总；
+- 单元测试、合成端到端 smoke test、协议注册表和复现文档。
 
-## 有意排除的内容
+## 排除
 
-- 模型权重、Hugging Face 数据集、生成轨迹、隐藏状态张量、日志和实验结果。
-- NAS 路径、服务器专用 Conda 环境、tmux、systemd、nohup 状态、进程号和监控状态。
-- 动态文件系统任务队列，以及 A100/2080 Ti 生产者—消费者分配规则。
-- GPU 专用并发试验、功率管理脚本和故障恢复守护进程。
-- 旧版 GSM8K 1,000/200 协议、过期配置、smoke 输出和不兼容的旧缓存。
+- 模型权重与 Hugging Face cache；
+- 原始题目副本、生成 trajectory、hidden tensor、probe 权重；
+- 实验结果、图表、日志、PID、进程状态与 incident 证据；
+- cool100/NAS/Conda 绝对路径；
+- GPU 抢占、显存探测、动态 collector allocator、supervisor、tmux/nohup 等机器调度代码；
+- 临时备份、`.pre_*` 文件和不完整缓存。
 
-以上被排除的调度代码只影响吞吐，不属于科学方法或公共缓存的语义定义。
+这些排除项不改变模型、数据、标签、checkpoint、loss、calibration 或 metric 语义。

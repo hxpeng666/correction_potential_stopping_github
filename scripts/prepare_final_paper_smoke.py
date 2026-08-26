@@ -1,99 +1,91 @@
 #!/usr/bin/env python3
-"""创建确定性的链路检查与时间校准 ID 清单。"""
+"""Create deterministic, category-balanced ID lists for final-paper smoke tests."""
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.final_paper_inference import read_jsonl
-from src.final_paper_protocol import MMLU_SUBJECTS
+from src.final_paper_protocol import MMLU_CATEGORIES
 from src.utils import atomic_json
 
 
-def ordered(rows: list[dict[str, Any]], salt: str) -> list[dict[str, Any]]:
-    return sorted(
-        rows,
-        key=lambda row: hashlib.sha256(
-            f"20260803:{salt}:{row['problem_id']}".encode()
-        ).hexdigest(),
+SEED = 20260803
+PER_SPLIT = 8
+
+
+def hash_key(split: str, problem_id: str) -> str:
+    return hashlib.sha256(
+        f"final_paper_smoke:{SEED}:{split}:{problem_id}".encode("utf-8")
+    ).hexdigest()
+
+
+def gsm_ids(rows: list[dict], split: str) -> list[str]:
+    ordered = sorted(
+        (str(row["problem_id"]) for row in rows),
+        key=lambda value: hash_key(split, value),
     )
+    return ordered[:PER_SPLIT]
+
+
+def mmlu_ids(rows: list[dict], split: str) -> list[str]:
+    selected: list[str] = []
+    for category in ("STEM", "Humanities", "Social Sciences", "Other"):
+        candidates = sorted(
+            (row for row in rows if row["category"] == category),
+            key=lambda row: hash_key(split, str(row["problem_id"])),
+        )
+        used_subjects: set[str] = set()
+        local = []
+        for row in candidates:
+            subject = str(row["subject"])
+            if subject in used_subjects:
+                continue
+            used_subjects.add(subject)
+            local.append(str(row["problem_id"]))
+            if len(local) == 2:
+                break
+        if len(local) != 2:
+            raise ValueError(f"cannot select two subjects for {category}/{split}")
+        selected.extend(local)
+    if len(selected) != PER_SPLIT or len(set(selected)) != PER_SPLIT:
+        raise ValueError(f"invalid MMLU smoke selection for {split}")
+    return selected
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=Path("data/final_paper_replay_v2"),
-    )
-    parser.add_argument(
-        "--output-root",
-        type=Path,
-        default=Path("results/final_paper_replay_v2/selections"),
-    )
-    args = parser.parse_args()
-    data_root = args.data_root if args.data_root.is_absolute() else ROOT / args.data_root
-    output = args.output_root if args.output_root.is_absolute() else ROOT / args.output_root
-
-    manifest: dict[str, Any] = {
-        "seed": 20260803,
-        "files": {},
-        "selections": {"gsm8k": {}, "mmlu": {}},
+    output = ROOT / "results/final_paper_v1_smoke/splits"
+    manifest = {
+        "status": "complete",
+        "seed": SEED,
+        "samples_per_dataset_split": PER_SPLIT,
+        "selection": {},
     }
-    for split in ("probe_train", "calibration", "heldout"):
-        gsm = ordered(read_jsonl(data_root / "gsm8k" / f"{split}.jsonl"), f"gsm:{split}")
-        path = output / f"gsm8k_{split}_smoke_ids.json"
-        values = [str(row["problem_id"]) for row in gsm[:20]]
-        atomic_json(values, path)
-        manifest["files"][path.name] = len(values)
-        manifest["selections"]["gsm8k"][split] = values
-
-        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in read_jsonl(data_root / "mmlu" / f"{split}.jsonl"):
-            groups[str(row["subject"])].append(row)
-        values = [
-            str(ordered(groups[subject], f"mmlu:{split}:{subject}")[0]["problem_id"])
-            for subject in MMLU_SUBJECTS
-        ]
-        path = output / f"mmlu_{split}_smoke_ids.json"
-        atomic_json(values, path)
-        manifest["files"][path.name] = len(values)
-        manifest["selections"]["mmlu"][split] = values
-
-    gsm_probe = ordered(
-        read_jsonl(data_root / "gsm8k" / "probe_train.jsonl"),
-        "gsm:timing",
-    )
-    gsm_timing = [str(row["problem_id"]) for row in gsm_probe[:200]]
-    path = output / "gsm8k_probe_train_timing_ids.json"
-    atomic_json(gsm_timing, path)
-    manifest["files"][path.name] = len(gsm_timing)
-
-    mmlu_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in read_jsonl(data_root / "mmlu" / "probe_train.jsonl"):
-        mmlu_groups[str(row["subject"])].append(row)
-    mmlu_timing = [
-        str(row["problem_id"])
-        for subject in MMLU_SUBJECTS
-        for row in ordered(mmlu_groups[subject], f"mmlu:timing:{subject}")[:8]
-    ]
-    path = output / "mmlu_probe_train_timing_ids.json"
-    atomic_json(mmlu_timing, path)
-    manifest["files"][path.name] = len(mmlu_timing)
-    manifest["timing_note"] = (
-        "Timing IDs are drawn only from probe_train: 200 GSM8K and "
-        "8 per MMLU subject (456 total). They are independent of policy calibration."
-    )
-    atomic_json(manifest, output / "selection_manifest.json")
-    atomic_json(manifest["selections"], output / "smoke_selection.json")
+    for dataset in ("gsm8k", "mmlu"):
+        prepared = ROOT / f"data/final_paper_v1/{dataset}"
+        manifest["selection"][dataset] = {}
+        for split in ("probe_train", "calibration", "heldout"):
+            rows = read_jsonl(prepared / f"{split}.jsonl")
+            ids = gsm_ids(rows, split) if dataset == "gsm8k" else mmlu_ids(rows, split)
+            by_id = {str(row["problem_id"]): row for row in rows}
+            path = output / f"{dataset}_{split}_ids.json"
+            atomic_json(ids, path)
+            metadata = {
+                "path": str(path.relative_to(ROOT)),
+                "problem_ids": ids,
+            }
+            if dataset == "mmlu":
+                metadata["subjects"] = [by_id[value]["subject"] for value in ids]
+                metadata["categories"] = [by_id[value]["category"] for value in ids]
+                if set(metadata["categories"]) != set(MMLU_CATEGORIES):
+                    raise ValueError(f"MMLU smoke misses a category in {split}")
+            manifest["selection"][dataset][split] = metadata
+    atomic_json(manifest, output / "final_paper_smoke_selection.json")
     print(json.dumps(manifest, indent=2))
 
 

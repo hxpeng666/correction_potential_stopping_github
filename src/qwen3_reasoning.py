@@ -11,8 +11,17 @@ from typing import Any
 
 import torch
 
-# Qwen3 是纯文本模型；关闭可选的视觉组件自动发现，可避免导入无关的
-# torchvision/timm 安装。注意力后端由实验配置显式指定（论文协议使用 SDPA）。
+# The server carries an old optional timm/torchvision stack.  Qwen3 does not use
+# The shared Conda environment exposes an unusable optional flash-attn binary
+# (built against a newer glibc).  This project is preregistered to use SDPA, so
+# fail closed against accidental FlashAttention discovery without modifying the
+# external environment.
+import transformers.utils as _transformers_utils
+import transformers.utils.import_utils as _transformers_import_utils
+_transformers_utils.is_flash_attn_2_available = lambda: False
+_transformers_import_utils.is_flash_attn_2_available = lambda: False
+
+# it, but recent Transformers auto-mappings may eagerly inspect vision configs.
 os.environ.setdefault("USE_TIMM", "0")
 os.environ.setdefault("USE_TORCHVISION", "0")
 
@@ -22,7 +31,7 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 
 
 def inspect_qwen3(path: Path) -> dict[str, Any]:
-    """只有 *path* 指向完整的本地 Qwen3 检查点时才允许继续。"""
+    """Fail closed unless *path* is a complete local Qwen3 checkpoint."""
     config_path = path / "config.json"
     if not config_path.is_file():
         raise FileNotFoundError(f"missing local Qwen3 config: {config_path}")
@@ -54,7 +63,7 @@ def inspect_qwen3(path: Path) -> dict[str, Any]:
     }
 
 
-def load_qwen3(path: Path, device: torch.device, dtype_name: str = "float16",
+def load_qwen3(path: Path, device: torch.device, dtype_name: str = "bfloat16",
                attention_backend: str = "sdpa"):
     audit = inspect_qwen3(path)
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16}[dtype_name]
@@ -73,7 +82,7 @@ def load_qwen3(path: Path, device: torch.device, dtype_name: str = "float16",
 
 
 class CheckpointHiddenCapture:
-    """可开关的钩子：仅在请求的解码步骤保留张量。"""
+    """Gateable hooks: no tensor is retained outside requested decode steps."""
 
     def __init__(self, model, layer_indices: list[int]):
         layers = model.model.layers
@@ -141,9 +150,7 @@ def sample_token(logits: torch.Tensor, generator: torch.Generator, temperature: 
     return int(torch.multinomial(probabilities, 1, generator=generator))
 
 
-def _timed_forward(model, *, measure_timing: bool = True, **kwargs):
-    if not measure_timing:
-        return model(**kwargs), float("nan")
+def _timed_forward(model, **kwargs):
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
@@ -168,21 +175,15 @@ class Trace:
 def generate_trace(model, tokenizer, input_ids: torch.Tensor, attention_mask: torch.Tensor,
                    generation: dict[str, Any], seed: int,
                    capture: CheckpointHiddenCapture | None = None,
-                   checkpoints: list[int] | None = None,
-                   measure_timing: bool = True) -> Trace:
+                   checkpoints: list[int] | None = None) -> Trace:
     checkpoints = sorted(set(checkpoints or []))
     checkpoint_set = set(checkpoints)
     generator = torch.Generator(device=input_ids.device).manual_seed(seed)
     eos_ids = tokenizer.eos_token_id
     eos = set(eos_ids if isinstance(eos_ids, list) else [eos_ids])
-    started = time.perf_counter() if measure_timing else None
+    started = time.perf_counter()
     output, prefill_ms = _timed_forward(
-        model,
-        measure_timing=measure_timing,
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        use_cache=True,
-        return_dict=True,
+        model, input_ids=input_ids, attention_mask=attention_mask, use_cache=True, return_dict=True
     )
     past = output.past_key_values
     token = sample_token(output.logits, generator, generation["temperature"],
@@ -202,7 +203,6 @@ def generate_trace(model, tokenizer, input_ids: torch.Tensor, attention_mask: to
         mask = torch.ones((1, total_length), dtype=attention_mask.dtype, device=input_ids.device)
         output, elapsed = _timed_forward(
             model,
-            measure_timing=measure_timing,
             input_ids=token_tensor,
             attention_mask=mask,
             past_key_values=past,
@@ -219,17 +219,10 @@ def generate_trace(model, tokenizer, input_ids: torch.Tensor, attention_mask: to
         logps.append(logp)
         margins.append(margin)
         entropies.append(entropy)
-        if measure_timing:
-            decode_ms.append(elapsed)
-    if measure_timing:
-        torch.cuda.synchronize()
-    wall_ms = (
-        1000.0 * (time.perf_counter() - started)
-        if started is not None
-        else float("nan")
-    )
+        decode_ms.append(elapsed)
+    torch.cuda.synchronize()
     return Trace(tokens, hidden, logps, margins, entropies, prefill_ms, decode_ms,
-                 wall_ms)
+                 1000.0 * (time.perf_counter() - started))
 
 
 def tail_mean(values: list[float], end: int, width: int = 8) -> float:

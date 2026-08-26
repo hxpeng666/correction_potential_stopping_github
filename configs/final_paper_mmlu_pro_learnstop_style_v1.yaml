@@ -1,0 +1,98 @@
+primary: false
+runnable: true
+status: frozen_learnstop_style_cross_validated_evaluation
+protocol_id: cps_qwen3_4b_sentence_empiricalB_seed20260803_mmlupro800_cv5_cal320_test480_v1
+report_label: MMLU-Pro-800 LearnStop-style 5-fold OOF
+seed:
+  global: 20260803
+  dataset_sampling: 42
+  oof_group_kfold: deterministic_no_shuffle
+  internal_split: 0
+  probe_initialization: 0
+  calibration_test_split: 123
+  bootstrap: 20260803
+dataset:
+  name: TIGER-Lab/MMLU-Pro
+  prepared_root: data/final_paper_mmlu_pro_learnstop_style_v1
+  split_manifest: splits/mmlu_pro_learnstop_style_split.json
+  source_split: test
+  pool_count: 800
+  selection: numpy_default_rng_42_choice_without_replacement_matching_LearnStop
+  oof_folds: 5
+  policy_calibration_fraction: 0.40
+  policy_calibration_count: 320
+  final_test_count: 480
+  final_test_note: OOF prediction for each question; fold models may train on other questions in the final-test subset
+  demonstrations_split: validation
+  demonstrations_per_category: 5
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [20]
+checkpoint_protocol:
+  primary_schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+  boundary_regex: "\\n+|[.!?;]+(?:[\"')\\]]*)?(?=\\s|$)"
+prompt:
+  system: "Answer the multiple-choice question. Think step by step, then end with exactly one boxed option letter such as \\boxed{A}."
+  demonstrations_include_reasoning: false
+features:
+  primary_layer_zero_based: 20
+  hidden_size: 2560
+  input_width: 5126
+probe:
+  architecture: [5126, 384, 96, 1]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: each_outer_fold_internal_fit_only
+  correction_positive_weight: 1.5
+  correction_negative_weight: 1_plus_remaining
+  trajectory_softmin_beta: 0.5
+calibration:
+  threshold_quantiles: 101
+  selection: first_hit
+  empirical_lost_correct_B: [0, 1, 2, 4, 10]
+  named_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  formal_certified_is_supplement_only: true
+replay:
+  label: A100 single-request replay-estimated latency
+  cost_model: results/final_paper_replay_v3/timing_calibration_after_supplement_v1/A100_SINGLE_REQUEST_COST_MODEL.json
+  checkpoint_overhead: results/final_paper_primary_v1/timing/checkpoint_overhead_float16_v2_30k.json
+  collection_timing_excluded: true
+statistics:
+  bootstrap_replicates: 10000
+  unit: category_stratified_problem
+references:
+  learnstop_paper: https://arxiv.org/abs/2606.30852
+  learnstop_code: https://github.com/dongzhe1/llm-think-stop
+  deviations_from_learnstop:
+    - correction-potential hidden-state MLP replaces LearnStop output-feature logistic regression
+    - sentence-step checkpoints replace fixed budgets for the adaptive main method
+    - empirical B is the primary calibration protocol; UCB is supplementary
+    - Qwen3-4B FP16 sampling replaces Qwen3-8B/32B greedy decoding
+    - MMLU-Pro validation is retained as category-specific five-shot demonstrations
+output_root: results/final_paper_mmlu_pro_learnstop_style_v1

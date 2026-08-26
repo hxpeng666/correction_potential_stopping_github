@@ -1,0 +1,21 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_four_state_utility_zero_v1_smoke
+seed: {global: 20260803, probe_initialization: 0, internal_split: 0, bootstrap: 20260803}
+probe:
+  architecture: [5126, 384, 96, 4]
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 1
+  patience: 1
+decision:
+  class_order: [W_to_C, C_to_W, W_to_W, C_to_C]
+  probability_transform: softmax
+  continue_when: p_WC_minus_p_CW_greater_than_or_equal_to_zero
+  stop_when: p_WC_minus_p_CW_less_than_zero
+  threshold_calibration: none
+datasets:
+  gsm8k: {probe_train: 8, calibration: 8, heldout: 8}
+  mmlu_pro: {probe_train: 8, calibration: 8, heldout: 8}

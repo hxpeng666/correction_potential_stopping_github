@@ -1,0 +1,20 @@
+# Exact portable overlay used by the frozen Qwen/DeepSeek protocols.
+transformers==4.53.3
+tokenizers==0.21.4
+accelerate==1.9.0
+numpy==2.1.3
+pandas==2.2.3
+scikit-learn==1.6.1
+scipy>=1.10,<2
+PyYAML>=6.0
+datasets>=2.18,<4
+nltk>=3.9,<4
+huggingface_hub>=0.33,<1
+safetensors>=0.4
+matplotlib>=3.9,<4
+threadpoolctl>=3.5,<4
+contourpy>=1.2,<2
+cycler>=0.12,<1
+fonttools>=4.53,<5
+kiwisolver>=1.4,<2
+pyparsing>=3.1,<4

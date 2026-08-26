@@ -19,6 +19,7 @@ FEATURE_KINDS = (
     "h_only",
     "h_delta",
     "full",
+    "full_no_delta",
     "full_no_entropy",
     "full_no_position",
 )
@@ -45,12 +46,43 @@ class FinalPaperProbe(nn.Module):
         return self.network(values)[:, 0]
 
 
-def _fallback_record(artifact: dict[str, Any]) -> dict[str, Any]:
+def _finite_cost(value: Any, token_fallback: int | float) -> float:
+    """Use cached timing when valid; otherwise use reasoning tokens as cost proxy."""
+    if value is not None:
+        try:
+            numeric = float(value)
+            if np.isfinite(numeric) and numeric > 0:
+                return numeric
+        except (TypeError, ValueError):
+            pass
+    return float(token_fallback)
+
+
+def _fallback_record(artifact: dict[str, Any], schedule: str) -> dict[str, Any]:
     source_path = Path(artifact["source_dense_artifact"])
     if not source_path.is_absolute():
         source_path = PROJECT_ROOT / source_path
     source = torch.load(source_path, map_location="cpu", weights_only=False)
     dense = source["dense"]
+    dense_tokens = int(dense["reasoning_tokens"])
+    decoding = artifact.get("forced_answer_decoding", {})
+    greedy_token_cost = (
+        isinstance(decoding, dict)
+        and decoding.get("strategy") == "greedy_argmax"
+        and decoding.get("do_sample") is False
+    )
+    if greedy_token_cost:
+        dense_wall_ms = float(dense_tokens)
+        adaptive_fallback_wall_ms = float(dense_tokens)
+    else:
+        dense_wall_ms = _finite_cost(dense.get("wall_ms"), dense_tokens)
+        adaptive_fallback_wall_ms = _finite_cost(
+            dense.get(
+                f"{schedule}_adaptive_fallback_wall_ms",
+                dense.get("adaptive_fallback_wall_ms"),
+            ),
+            dense_tokens,
+        )
     return {
         "problem_id": str(source["problem_id"]),
         "subject": source["record"].get("subject"),
@@ -58,8 +90,10 @@ def _fallback_record(artifact: dict[str, Any]) -> dict[str, Any]:
         "gold_answer": source["gold_answer"],
         "dense_prediction": dense["prediction"],
         "dense_success": bool(dense["success"]),
-        "dense_tokens": int(dense["reasoning_tokens"]),
-        "dense_wall_ms": float(dense["wall_ms"]),
+        "dense_tokens": dense_tokens,
+        "dense_wall_ms": dense_wall_ms,
+        "adaptive_fallback_wall_ms": adaptive_fallback_wall_ms,
+        "cost_mode": "reasoning_tokens" if greedy_token_cost else "replay_wall_or_token_fallback",
     }
 
 
@@ -79,9 +113,21 @@ def _artifact_rows(
         for index, row in enumerate(rows)
         if schedule in row.get("checkpoint_schedules", [])
     ]
-    fallback = _fallback_record(artifact) if not selected else None
+    selected_rows = [dict(rows[index]) for index in selected]
+    for row in selected_rows:
+        schedule_stop = (
+            "fixed_adaptive_replay_stop_wall_ms"
+            if schedule == "fixed"
+            else f"{schedule}_replay_stop_wall_ms"
+        )
+        schedule_fallback = f"{schedule}_adaptive_fallback_wall_ms"
+        if schedule_stop in row:
+            row["replay_stop_wall_ms"] = float(row[schedule_stop])
+        if schedule_fallback in row:
+            row["adaptive_fallback_wall_ms"] = float(row[schedule_fallback])
+    fallback = _fallback_record(artifact, schedule) if not selected else None
     return (
-        [rows[index] for index in selected],
+        selected_rows,
         hidden[selected].float(),
         [int(value) for value in artifact["capture_layers"]],
         fallback,
@@ -236,6 +282,16 @@ def build_features(
             delta_norm,
             cosine,
         ]
+    elif feature_kind == "full_no_delta":
+        parts = [
+            current,
+            checkpoint,
+            log_checkpoint,
+            delta_t,
+            entropy,
+            delta_norm,
+            cosine,
+        ]
     elif feature_kind == "full_no_entropy":
         parts = [
             current,
@@ -253,6 +309,7 @@ def build_features(
         "h_only": 2560,
         "h_delta": 5120,
         "full": 5126,
+        "full_no_delta": 2566,
         "full_no_entropy": 5125,
         "full_no_position": 5123,
     }[feature_kind]
@@ -462,6 +519,7 @@ def simulate_policy(
     for problem_id, group in scored.groupby("problem_id", sort=False):
         ordered = group.sort_values("checkpoint")
         first = ordered.iloc[0]
+        token_cost_only = first.get("forced_answer_decoding") == "greedy_argmax"
         eligible = ordered.iloc[0:0] if force_dense else (
             ordered[ordered.score >= threshold]
             if direction == "high"
@@ -471,7 +529,21 @@ def simulate_policy(
         if fallback:
             current_success = bool(first.dense_success)
             method_tokens = int(first.dense_tokens)
-            replay_wall_ms = float(first.dense_wall_ms)
+            dense_wall_ms = (
+                float(first.dense_tokens)
+                if token_cost_only
+                else _finite_cost(first.get("dense_wall_ms"), first.dense_tokens)
+            )
+            replay_wall_ms = (
+                float(method_tokens)
+                if token_cost_only
+                else _finite_cost(
+                    first.get("dense_wall_ms")
+                    if force_dense
+                    else first.get("adaptive_fallback_wall_ms"),
+                    method_tokens,
+                )
+            )
             checkpoint = None
             transition = "fallback"
             prediction = first.dense_prediction
@@ -480,12 +552,21 @@ def simulate_policy(
             current_success = bool(chosen.current_success)
             method_tokens = min(
                 int(chosen.dense_tokens),
-                int(chosen.checkpoint) + int(chosen.branch_tokens),
+                (
+                    int(chosen.checkpoint)
+                    if token_cost_only
+                    else int(chosen.checkpoint) + int(chosen.branch_tokens)
+                ),
             )
-            replay_wall_ms = float(
-                chosen.dense_prefill_cuda_ms
-                + chosen.prefix_decode_cuda_ms
-                + chosen.branch_wall_ms
+            dense_wall_ms = (
+                float(chosen.dense_tokens)
+                if token_cost_only
+                else _finite_cost(chosen.get("dense_wall_ms"), chosen.dense_tokens)
+            )
+            replay_wall_ms = (
+                float(method_tokens)
+                if token_cost_only
+                else _finite_cost(chosen.get("replay_stop_wall_ms"), method_tokens)
             )
             checkpoint = int(chosen.checkpoint)
             transition = transition_name(current_success, bool(chosen.dense_success))
@@ -506,7 +587,8 @@ def simulate_policy(
                 "method_tokens": method_tokens,
                 "dense_tokens": int(first.dense_tokens),
                 "replay_wall_ms": replay_wall_ms,
-                "dense_wall_ms": float(first.dense_wall_ms),
+                "dense_wall_ms": dense_wall_ms,
+                "cost_mode": "reasoning_tokens" if token_cost_only else "replay_wall_or_token_fallback",
             }
         )
     seen = {row["problem_id"] for row in records}
@@ -528,8 +610,22 @@ def simulate_policy(
                 "dense_success": bool(base["dense_success"]),
                 "method_tokens": int(base["dense_tokens"]),
                 "dense_tokens": int(base["dense_tokens"]),
-                "replay_wall_ms": float(base["dense_wall_ms"]),
-                "dense_wall_ms": float(base["dense_wall_ms"]),
+                "replay_wall_ms": (
+                    float(base["dense_tokens"])
+                    if base.get("cost_mode") == "reasoning_tokens"
+                    else _finite_cost(
+                        base.get("dense_wall_ms")
+                        if force_dense
+                        else base.get("adaptive_fallback_wall_ms"),
+                        base["dense_tokens"],
+                    )
+                ),
+                "dense_wall_ms": (
+                    float(base["dense_tokens"])
+                    if base.get("cost_mode") == "reasoning_tokens"
+                    else _finite_cost(base.get("dense_wall_ms"), base["dense_tokens"])
+                ),
+                "cost_mode": base.get("cost_mode", "replay_wall_or_token_fallback"),
             }
         )
         seen.add(base["problem_id"])
@@ -680,9 +776,15 @@ def simulate_fixed_budget(
                 int(chosen.checkpoint) + int(chosen.branch_tokens),
             )
             replay_wall_ms = float(
-                chosen.dense_prefill_cuda_ms
-                + chosen.prefix_decode_cuda_ms
-                + chosen.branch_wall_ms
+                chosen.get(
+                    "fixed_replay_stop_wall_ms",
+                    chosen.get(
+                        "replay_stop_wall_ms",
+                        chosen.dense_prefill_cuda_ms
+                        + chosen.prefix_decode_cuda_ms
+                        + chosen.branch_wall_ms,
+                    ),
+                )
             )
             checkpoint = int(chosen.checkpoint)
             transition = transition_name(current_success, bool(chosen.dense_success))

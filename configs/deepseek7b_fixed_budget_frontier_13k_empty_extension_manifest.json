@@ -1,0 +1,7 @@
+{
+  "status": "frozen",
+  "scope": "none",
+  "eligible_count": 0,
+  "eligible": [],
+  "note": "All fixed-budget sources are read directly from the frozen 13K v2 cache; no 32K extension is required."
+}

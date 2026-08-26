@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from src.final_paper_inference import atomic_torch_save
+from src.final_paper_protocol import canonical_fingerprint
 from src.legacy_empirical_probe_v4 import summarize_policy_records, transition_name
 from src.utils import atomic_json, load_yaml
 
@@ -124,9 +125,15 @@ def fixed_records(
                 int(row["checkpoint"]) + int(row["branch_tokens"]),
             )
             method_wall = float(
-                row["dense_prefill_cuda_ms"]
-                + row["prefix_decode_cuda_ms"]
-                + row["branch_wall_ms"]
+                row.get(
+                    "fixed_replay_stop_wall_ms",
+                    row.get(
+                        "replay_stop_wall_ms",
+                        row["dense_prefill_cuda_ms"]
+                        + row["prefix_decode_cuda_ms"]
+                        + row["branch_wall_ms"],
+                    ),
+                )
             )
             checkpoint = int(row["checkpoint"])
             transition = transition_name(
@@ -210,12 +217,33 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     destination = args.output if args.output.is_absolute() else ROOT / args.output
+    config = load_yaml(args.config)
+    if config.get("primary") is True and config.get("runnable") is not True:
+        raise RuntimeError("论文主配置尚未通过 dtype 配对审计，禁止启动主 baseline replay")
+    dense_marker = args.dense_root / "materialize.complete"
+    checkpoint_marker = args.checkpoint_root / "materialize.complete"
+    if not dense_marker.is_file() or not checkpoint_marker.is_file():
+        raise ValueError("baseline 输入缺少 materialize.complete")
+    invocation = {
+        "protocol_id": config["protocol_id"],
+        "dataset": args.dataset,
+        "dense_root": str(args.dense_root.resolve()),
+        "checkpoint_root": str(args.checkpoint_root.resolve()),
+        "fixed_budgets": config["generation"]["fixed_budgets"],
+        "dense_view": json.loads(dense_marker.read_text(encoding="utf-8")),
+        "checkpoint_view": json.loads(checkpoint_marker.read_text(encoding="utf-8")),
+    }
+    invocation_fingerprint = canonical_fingerprint(invocation)
     marker = destination / "phase.complete"
     if args.resume and marker.is_file() and (destination / "baselines.json").is_file():
-        print(json.dumps({"status": "skipped_complete", "output": str(destination)}))
-        return
+        previous = json.loads(marker.read_text(encoding="utf-8"))
+        if previous.get("invocation_fingerprint") == invocation_fingerprint:
+            print(json.dumps({"status": "skipped_complete", "output": str(destination)}))
+            return
+        raise RuntimeError(f"拒绝 resume 不同指纹的 baseline 输出：{destination}")
+    if destination.exists() and any(destination.iterdir()):
+        raise RuntimeError(f"拒绝覆盖既有 baseline 输出：{destination}")
     destination.mkdir(parents=True, exist_ok=True)
-    config = load_yaml(args.config)
     summaries: dict[str, Any] = {}
     all_records: dict[str, Any] = {}
     for split in ("calibration", "heldout"):
@@ -255,6 +283,11 @@ def main() -> None:
         heldout_paths
         and torch.load(heldout_paths[0], map_location="cpu", weights_only=False).get("latency_label") == "A100 single-request replay-estimated latency"
     )
+    first_artifact = (
+        torch.load(heldout_paths[0], map_location="cpu", weights_only=False)
+        if heldout_paths else {}
+    )
+    overhead_included = "includes_boundary" in str(first_artifact.get("policy_cost_mode", ""))
     payload = {
         "status": "complete",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -263,9 +296,13 @@ def main() -> None:
         "checkpoint_root": str(args.checkpoint_root),
         "summaries": summaries,
         "timing_note": (
-            "All latency values are A100 single-request replay-estimated latency under the frozen cost model; collection timings and probe-check overhead are excluded."
+            "All latency values are A100 single-request replay-estimated latency under the frozen cost model; collection timings are excluded. Token sampling is included for all generation, and adaptive policies additionally include top-20 entropy, sentence-boundary, hidden/entropy-tail/scaler/MLP/threshold overhead."
+            if replay_v2 and overhead_included else
+            "All latency values are A100 single-request replay-estimated latency under the frozen cost model; collection timings and probe-check overhead are excluded (supplementary zero-overhead sensitivity only)."
             if replay_v2 else "Dense/Direct are actual isolated per-sample generation timings from collection; fixed-budget values are cached trajectory replay estimates."
         ),
+        "policy_cost_mode": first_artifact.get("policy_cost_mode"),
+        "checkpoint_overhead_included": overhead_included,
     }
     payload["latency_label"] = "A100 single-request replay-estimated latency"
     atomic_json(payload, destination / "baselines.json")
@@ -276,6 +313,7 @@ def main() -> None:
     atomic_json(
         {
             "status": "complete",
+            "invocation_fingerprint": invocation_fingerprint,
             "artifacts": ["baselines.json", "baseline_records.pt"],
         },
         marker,

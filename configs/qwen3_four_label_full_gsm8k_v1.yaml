@@ -1,0 +1,30 @@
+seed: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  local_path: models/Qwen3-4B
+  dtype: bfloat16
+  attention_backend: sdpa
+  enable_thinking: true
+generation:
+  max_new_tokens: 4096
+  collection_max_new_tokens: 1024
+  write_dense_reference: true
+  force_answer_max_new_tokens: 16
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  checkpoints: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [8, 20, 35]
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+prompt:
+  system: "Solve the grade-school math problem carefully. Think step by step, then end with exactly \\boxed{number}."
+  user_template: "Problem: {question}"
+splits:
+  train: {data_path: data/gsm8k/train.jsonl, start_index: 0, num_samples: 1000}
+  calibration: {data_path: data/gsm8k/train.jsonl, start_index: 1000, num_samples: 200}
+  heldout: {data_path: data/gsm8k/test.jsonl, start_index: 0, num_samples: 1319}
+output_dir: results/qwen3_four_label_full_gsm8k_v1
+policy:
+  minimum_accuracy_retention: 0.99
+  minimum_wall_reduction: 0.05
+  bootstrap_samples: 10000

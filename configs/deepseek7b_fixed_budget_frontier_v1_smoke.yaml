@@ -1,0 +1,42 @@
+protocol_id: cps_deepseek_r1_distill_qwen_7b_fixed_relative_budget_frontier_selective32k_v1_smoke
+seed: 20260820
+model:
+  id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  local_path: models/DeepSeek-R1-Distill-Qwen-7B
+  dtype: bfloat16
+  attention_backend: sdpa
+  frozen: true
+source:
+  config: configs/deepseek7b_main_v3_selective32k.yaml
+  output_root: results/deepseek7b_main_v3_selective32k
+  cache_subdirectory: cache
+  split: heldout
+  dense_max_new_tokens: 32768
+  require_source_protocol_fingerprint: true
+  selective_extension_manifest: results/deepseek7b_main_v3_selective32k/SELECTIVE_DENSE_EXTENSION_MANIFEST.json
+generation:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_do_sample: true
+  dense_max_new_tokens: 32768
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  force_answer_strategy: greedy_argmax
+  force_answer_do_sample: false
+  force_answer_max_new_tokens: 48
+budget:
+  retained_fractions: [0.50]
+  position_rule: floor_fraction_of_complete_dense_generated_tokens
+  minimum_retained_dense_tokens: 1
+  zero_dense_policy: dense_fallback
+datasets:
+  gsm8k: {heldout: 1319}
+  math500: {heldout: 500}
+  aime: {heldout: 30}
+reporting:
+  split: heldout
+  prompt_tokens_excluded: true
+  total_token_cost_includes_forced_answer_suffix_and_generated_answer: true
+  dense_reference: frozen_selective32k_source_artifact
+  bootstrap_replicates: 100
+output_root: results/deepseek7b_fixed_relative_budget_frontier_selective32k_v1_smoke

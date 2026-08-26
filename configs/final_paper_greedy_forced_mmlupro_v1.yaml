@@ -1,0 +1,41 @@
+protocol_id: cps_qwen3_4b_fp16_sentence_empiricalB_mmlupro_train1000_cal500_test1000_greedy_forced_v1
+parent_protocol_id: cps_qwen3_4b_fp16_sentence_empiricalB_mmlupro_test_train1000_cal500_test1000_token_v2
+status: collecting
+objective: recollect_only_mmlupro_checkpoint_forced_answers_with_greedy_argmax
+seed:
+  global: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+forced_answer_decoding:
+  strategy: greedy_argmax
+  do_sample: false
+  temperature: null
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 16
+  suffix: "\n</think>\n\n\\boxed{"
+preservation:
+  dense_trajectories: byte_equivalent_values_from_source_artifact
+  hidden_states: byte_equivalent_values_from_source_artifact
+  prompts: unchanged
+  checkpoints: unchanged
+  parser: unchanged_mmlupro_dynamic_option_parser
+  direct_baseline: unchanged_sampled_source_artifact
+datasets:
+  mmlu_pro:
+    source_selected_cache_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/replay_view_token
+    source_samples_subdir: "."
+    source_protocol_fingerprint: 6bdf2259897aae8b9e8887f019c2a1f144d5764f7436ef82e9832b0317ddb866
+    expected_counts:
+      probe_train: 1000
+      calibration: 500
+      heldout: 1000
+output_root: results/final_paper_greedy_forced_mmlupro_v1
+queue_root: results/final_paper_greedy_forced_mmlupro_v1/queue
+cache_root: results/final_paper_greedy_forced_mmlupro_v1/selected_common_cache
+logs_root: results/final_paper_greedy_forced_mmlupro_v1/logs

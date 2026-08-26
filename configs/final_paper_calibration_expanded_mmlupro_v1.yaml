@@ -1,0 +1,83 @@
+primary: false
+runnable: true
+status: supplemental_calibration_expansion
+protocol_id: cps_qwen3_4b_fp16_sentence_mmlupro_calibration_extra500_v1
+source_protocol: configs/final_paper_dynamic_deployable_os_frontier_v2.yaml
+source_result_root: results/final_paper_dynamic_deployable_os_frontier_v2/dynamic/full/mmlu_pro
+report_label: MMLU-Pro 500→1000 calibration 扩展稳定性实验
+
+seed:
+  global: 20260803
+  dataset_sampling: 20260803
+  bootstrap: 20260803
+
+dataset:
+  name: TIGER-Lab/MMLU-Pro
+  prepared_root: data/final_paper_mmlu_pro_calibration_expansion_v1
+  split_manifest: splits/mmlu_pro_calibration_expansion_v1.json
+  collection_file: new_collection.jsonl
+  source_split: test
+  current_manifest: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/splits/mmlu_pro_independent_split.json
+  current_prepared_root: data/final_paper_mmlu_pro_independent_token_v2
+  calibration_extra_count: 500
+  expanded_calibration_count: 1000
+  heldout_count: 1000
+  demonstrations_split: validation
+  demonstrations_per_category: 5
+  stratification: category_x_frozen_global_length_quartile
+
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+  capture_layers: [20]
+
+checkpoint_protocol:
+  primary_schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+  boundary_regex: "\\n+|[.!?;]+(?:[\"')\\]]*)?(?=\\s|$)"
+
+prompt:
+  system: "Answer the multiple-choice question. Think step by step, then end with exactly one boxed option letter such as \\boxed{A}."
+  demonstrations_include_reasoning: false
+
+expanded_selection:
+  empirical_B_absolute: [0, 1, 2, 4, 10]
+  empirical_B_rate_matched_to_500:
+    B0: 0
+    B1: 2
+    B2: 4
+    B4: 8
+    B10: 20
+  accuracy_epsilon: 0.01
+  objective: minimum_mean_reasoning_tokens
+  candidates: 48
+  bootstrap_replicates: 10000
+  bootstrap_stratification: category
+  heldout_selection: false
+
+collection:
+  split_storage_name: heldout
+  semantic_role: calibration_extra
+  timing_enabled: false
+  reuse_existing_samples: true
+  new_llm_samples: 500
+
+output_root: results/final_paper_calibration_expanded_mmlupro_v1

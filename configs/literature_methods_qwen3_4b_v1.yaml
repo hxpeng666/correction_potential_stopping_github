@@ -1,0 +1,151 @@
+primary: false
+runnable: true
+protocol_id: literature_methods_qwen3_4b_common_scope_v1
+report_label: Strict method-level literature reproductions on frozen Qwen3-4B trajectories
+
+seed:
+  global: 20260803
+  probe: 0
+
+model:
+  id: Qwen/Qwen3-4B
+  local_path: models/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+
+common_scope:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_max_new_tokens: 4096
+  split_unit: problem
+  probe_train: 1000
+  calibration: 500
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  reasoning_cost_excludes_short_answer: true
+
+datasets:
+  gsm8k:
+    source_root: results/final_paper_greedy_forced_v1/selected_common_cache/gsm8k/merged
+    paragraph_cache_root: results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/paragraph
+    reuse_cache_roots:
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/sentence
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/paragraph
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/hybrid
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/fixed_budget
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/prefix_stride
+      - results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/lynx_cue
+    heldout: 1319
+  mmlu_pro:
+    source_root: results/final_paper_greedy_forced_mmlupro_v1/selected_common_cache/mmlu_pro/merged
+    paragraph_cache_root: results/mmlu_pro_checkpoint_followup_v1/cache/paragraph
+    reuse_cache_roots:
+      - results/mmlu_pro_checkpoint_followup_v1/cache/sentence
+      - results/mmlu_pro_checkpoint_followup_v1/cache/paragraph
+      - results/mmlu_pro_checkpoint_followup_v1/cache/lynx_cue
+    heldout: 1000
+
+methods:
+  learn_to_stop:
+    source:
+      paper: https://aclanthology.org/2025.emnlp-main.904/
+      code: https://github.com/launchnlp/reasoning_earlystop
+      code_commit: 0ff83811e409bc28cf2e06b5cd51ac4eac553f80
+    schedules: [native, paragraph]
+    native_checkpoint: nltk_sentence_end
+    representation: final_normalized_last_layer_at_checkpoint
+    label: stable_suffix_equal_to_dense_forced_answer
+    probe: single_layer_lstm
+    hidden_dim: 128
+    num_layers: 1
+    dropout: 0.1
+    optimizer: Adam
+    learning_rate: 0.0005
+    batch_size: 16
+    epochs: 200
+    validation_fraction: 0.2
+    validation_metric: F1
+    eval_interval: 10
+    scheduler: CosineAnnealingWarmRestarts
+    scheduler_T0: 20
+    scheduler_Tmult: 2
+    scheduler_eta_min: 0.000001
+    original_thresholds: [0.99, 0.999]
+
+  self_verification:
+    source:
+      paper: https://arxiv.org/abs/2504.05419
+      code: null
+    schedules: [native, paragraph]
+    native_checkpoint: reasoning_path_chunk_end
+    chunk_representation_endpoint: last_non_delimiter_token
+    path_keywords: [wait, double-check, alternatively, make sure, another way, verify, to confirm]
+    representation: final_normalized_last_layer_at_chunk_end
+    labeler_model: same_frozen_qwen3_4b
+    labeler_role: intermediate_answer_extraction_and_correctness_judging
+    probe_label_correctness_judging: same_frozen_qwen3_4b_replaces_gemini
+    heldout_metric_correctness_judging: frozen_dataset_parser
+    probe: weighted_two_layer_mlp
+    activation: ReLU
+    batch_size: 64
+    max_epochs: 200
+    internal_train_fraction: 0.8
+    learning_rates: [0.001, 0.0001, 0.00001]
+    imbalance_alpha: [0.3, 0.5, 0.7, 0.9, 1.0, 1.5, 2.0, 3.0]
+    weight_decay: [0.001, 0.01, 0.1]
+    hidden_dim: [0, 16, 32]
+    original_thresholds: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98]
+
+  lynx:
+    source:
+      paper: https://arxiv.org/abs/2512.05325
+      code: https://github.com/farukakgul/LYNX
+      code_commit: e62c6c2f1b9b07bceb86d44cc6c58a416ffb116f
+    schedules: [native, paragraph]
+    native_checkpoint: immediately_before_hmm_wait_alternatively
+    cue_patterns: [hmm, wait, alternatively]
+    feature_layers_one_based: [12, 18, 24, 36]
+    representation: concatenated_multilayer_event_hidden
+    force_answer_suffix: "</think> Final Answer: \\boxed{"
+    force_answer_max_new_tokens: 64
+    force_answer_strategy: greedy_argmax
+    label: forced_exit_answer_correctness
+    probe: two_hidden_layer_mlp
+    hidden_dims: [256, 64]
+    activation: ReLU
+    standardize: true
+    class_balanced_loss: true
+    optimizer: Adam
+    max_epochs: 500
+    validation_fraction: 0.2
+    early_stopping_patience: 10
+    conformal: class_conditional_split
+    conformal_deltas: [0.03, 0.05, 0.10, 0.20, 0.30]
+    decision: singleton_positive_predictive_set
+
+  thought_calibration:
+    source:
+      paper: https://arxiv.org/abs/2505.18404
+      code: null
+    schedules: [native, paragraph]
+    native_checkpoint: double_newline_sections_containing_wait_or_but
+    representation: mean_final_normalized_last_layer_over_step_tokens
+    pca_dim: 256
+    probes: [supervised, consistent]
+    probe_architecture: linear
+    probability_smoothing_window: 10
+    calibration: learn_then_test_fixed_sequence_binomial_tail
+    risk_levels: [0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+
+fair_calibration:
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  threshold_quantiles: 101
+  selection_scope: calibration_only
+
+output_root: results/literature_methods_qwen3_4b_v1

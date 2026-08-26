@@ -1,0 +1,94 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_dynamic_followup_existing_cache_single_seed_v3
+report_label: 动态停止补充诊断、强OS基线与最小Q偏置校正
+source_protocol_id: cps_qwen3_4b_fp16_sentence_dynamic_deployable_qcont_os_frontier_2566_v2
+seed:
+  global: 20260803
+  global_generation: 20260803
+  probe_primary: 0
+  internal_split: 0
+  batch: 0
+  policy_action: 20260803
+  bootstrap: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+checkpoint:
+  schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+features:
+  feature_kind: full_no_delta
+  input_width: 2566
+  layer_zero_based: 20
+probe:
+  shared_architecture: [2566, 384, 96]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  value_huber_beta: 1.0
+  trajectory_softmin_beta: 0.5
+calibration:
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  historical_workpoints:
+    strict: 1
+    balanced: 2
+    aggressive: 4
+dynamic_policy:
+  cost_type: normalized_reasoning_tokens
+  cost_unit_tokens: 4096
+  short_answer_cost: 0
+  lambda_grid: [0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 0.80, 1.60]
+  mu_grid: [0.0, 0.25, 0.50, 1.0, 2.0, 4.0]
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+  calibration_only_selection: true
+  heldout_selection: false
+q_bias_upgrade:
+  name: validation_huber_intercept
+  fit_scope: probe_train_internal_validation_only
+  fit_per_candidate: true
+  heldout_used_for_fit: false
+  calibration_used_for_fit: false
+os_pruner_strong:
+  label: controlled_progressive_independent_adaptation
+  lambda_training_order: descending
+  warm_start_within_mu_chain: true
+  independent_trunk_across_mu: true
+  candidate_epoch_selection: internal_validation_utility
+statistics:
+  bootstrap_replicates: 10000
+datasets:
+  gsm8k:
+    probe_train: 1000
+    calibration: 500
+    heldout: 1319
+    replay_root: results/final_paper_primary_v1/main_float16_seed20260803/replay_view/gsm8k
+    source_full_probe: results/final_paper_dynamic_deployable_os_frontier_v2/dynamic/full/gsm8k
+    legacy_probe_root: results/final_paper_primary_v1/main_float16_seed20260803/gsm8k/probes
+    bootstrap_stratification: problem
+  mmlu_pro:
+    probe_train: 1000
+    calibration: 500
+    heldout: 1000
+    replay_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/replay_view_token
+    source_full_probe: results/final_paper_dynamic_deployable_os_frontier_v2/dynamic/full/mmlu_pro
+    legacy_probe_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/probes_token
+    bootstrap_stratification: category
+output_root: results/final_paper_dynamic_followup_v3

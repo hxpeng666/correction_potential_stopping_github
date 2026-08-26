@@ -1,50 +1,140 @@
-# 方法规范
+# 方法：Correction-Potential Stopping
 
-## 状态与预测目标
+## 1. 离线监督
 
-对检查点 `t`，令 `c_t` 表示缓存中的强制作答是否正确，令 `f` 表示完整 Dense 轨迹的最终答案是否正确。四种状态分别为 `W→C`、`C→W`、`W→W` 和 `C→C`。主方法的标签为：
-
-```text
-y_t = 1[(not c_t) and f]
-```
-
-探针估计 `q_t=P(W→C|z_t)`。到达句子检查点时，如果 `q_t>tau`，则继续推理；否则停止推理，追加固定的最终答案后缀，并只生成一次答案。强制作答分支只用于离线标签构造，在线停止器不会查询这些分支。
-
-## 特征
-
-在第 20 层、隐藏宽度为 2,560 时：
+冻结 LLM 先生成完整 Dense reasoning trajectory。对 checkpoint `t` 的已有 reasoning prefix 追加固定后缀：
 
 ```text
-delta_h_t = h_t - h_previous
-z_t = [h_t, delta_h_t, t, log(1+t), delta_t,
-       entropy_tail8, ||delta_h_t||_2, cos(h_t, delta_h_t)]
+\n</think>\n\n\boxed{
 ```
 
-第一个检查点的隐藏差分设为零。`entropy_tail8` 是最近八个 Dense 推理 token 的 top-20 下一 token 熵的平均值。`build_features` 和 `build_online_feature` 固定使用相同的特征顺序，并通过单元测试检查二者的一致性。
+forced-answer branch 使用 greedy argmax；Qwen 历史协议最多 16 tokens，DeepSeek 当前协议最多 48 tokens。它只回答“如果现在停止，模型会输出什么答案”，不参与在线检查。
 
-## 探针与损失函数
+设标准答案、checkpoint 答案与 Dense 最终答案分别为 `a*`、`a_t`、`a_T`：
 
-MLP 结构为 `5126→384→96→1`。第一层线性层后使用 LayerNorm，激活函数为 GELU，两处 dropout 概率分别为 0.15 和 0.10。
+$$
+c_t=\mathbb 1[a_t=a^*],\qquad f=\mathbb 1[a_T=a^*].
+$$
 
-完整方法最小化检查点损失与轨迹损失之和。对每条含有 `W→C` 检查点的轨迹，轨迹损失使用 `beta=0.5` 的软最小值聚合这些检查点的 logit，并惩罚其中最低、最危险的 logit。`correction_bce` 消融仅移除该轨迹损失，其余设置保持不变。
+修正潜力标签：
 
-## 受控预测目标
+$$
+y_t=\mathbb 1[c_t=0\land f=1].
+$$
 
-- 正确性：检查点强制作答是否正确。
-- 一致性：检查点强制作答是否等于 Dense 最终答案；两个缺失答案不视为一致。
-- 最后切换：检查点是否严格位于最后一次答案变化之后，其中也包括最后一个检查点答案到 Dense 答案之间的变化。
-- 修正潜力：检查点答案错误且 Dense 最终答案正确。
+只有 W→C 是危险停止事件：
 
-正确性、一致性和最后切换使用检查点 BCE，并在高分时停止；修正潜力在低分时停止。前三者是统一实现框架中的受控预测目标，不代表对其他系统的论文级原样复现。
+| checkpoint → Dense | 标签 | 提前停止含义 |
+|---|---:|---|
+| W→C | 1 | 破坏未来本可发生的正确修正 |
+| C→W | 0 | 可能挽救后续损坏 |
+| W→W | 0 | 继续推理未带来 Dense 正确性收益 |
+| C→C | 0 | 当前已正确 |
 
-## 风险校准
+## 2. Checkpoint 与特征
 
-阈值网格由 101 个 calibration 分数分位点和一个完全不提前停止的 sentinel 组成。每个阈值都以轨迹为单位回放，并选择第一个满足停止条件的检查点。
+主部署 schedule 为 paragraph：使用正则 `\n\s*\n+` 在线检测空行边界，不施加 token 范围过滤；没有 paragraph checkpoint 的题回退 Dense。固定 token、sentence、prefix stride、LYNX cue 和 hybrid 是受控消融。
 
-当前论文主协议使用 calibration lost-correct 的历史经验绝对预算 `B={0,1,2,4,10}`。对每个 B，在 `W→C count<=B` 的阈值中选择 calibration replay latency 最低者；并依次以 token reduction 和 coverage 作为平局判据。Strict、Balanced、Aggressive 分别是 B=1、2、4。B 是有限 calibration 集上的经验事件数，不是总体风险的置信上界。Bonferroni/Clopper–Pearson 代码如保留，只能作为 `formal-certified-*` 补充结果，不能替代或混写当前主协议。
+从指定 zero-based layer 读取 checkpoint 最后一个 reasoning token 的 hidden state：
 
-另行在同一阈值曲线上选择 calibration coverage 最接近 30%、40%、50%、60%、70%、80%、90% 的工作点。held-out coverage 无需等于 calibration 目标，held-out 指标从不参与阈值或 epoch 选择。
+$$
+h_t\in\mathbb R^d.
+$$
 
-## 缺少合法检查点
+对前一 checkpoint `t^-`：
 
-如果 Dense 轨迹短于最小长度，或者不存在合法句子边界，则该问题回退到 Dense。它仍然保留在准确率、coverage、风险、延迟和 bootstrap 统计的分母中。
+$$
+\Delta h_t=h_t-h_{t^-},\qquad \Delta h_t=0\ \text{for the first checkpoint}.
+$$
+
+完整 `Delta h` 不拼接到当前主 MLP，仅计算两个标量：
+
+$$
+n_t=\lVert\Delta h_t\rVert_2,
+$$
+
+$$
+s_t=\frac{h_t^\top\Delta h_t}
+{\lVert h_t\rVert_2\lVert\Delta h_t\rVert_2+\epsilon}.
+$$
+
+再加入 `t`、`log(1+t)`、`Delta t=t-t^-`，以及正常 reasoning decode 中 top-20 logits 重新归一化后、最近 8 tokens 的平均熵 `H_t`。最终：
+
+$$
+z_t=[h_t;t;\log(1+t);\Delta t;H_t;n_t;s_t].
+$$
+
+- Qwen3-4B：`d=2560`，主 layer 20，`dim(z)=2566`；
+- DeepSeek-R1-Distill-Qwen-7B：`d=3584`，主 layer 16，`dim(z)=3590`。
+
+标准化统计只在 probe-train 的 internal-fit 问题上拟合，同一问题的 checkpoints 不会跨 internal fit/model-selection 两侧。
+
+## 3. Probe
+
+两个模型使用同形状的轻量 readout（输入宽度随 LLM hidden width 改变）：
+
+```text
+Linear(input, 384)
+→ LayerNorm → GELU → Dropout(0.15)
+→ Linear(384, 96) → GELU → Dropout(0.10)
+→ Linear(96, 1)
+```
+
+输出：
+
+$$
+q_t=\sigma(a_t)=P(c_t=0\land f=1\mid z_t).
+$$
+
+训练使用 AdamW，learning rate `2e-4`，weight decay `1e-3`，trajectory batch 为 24 个完整问题，gradient clipping `2.0`，最多 24 epochs，patience 6。
+
+## 4. BCE 与 normalized trajectory loss
+
+检查点级加权 BCE：
+
+$$
+L_{pt}=\frac1M\sum_t w_t\,\operatorname{BCEWithLogits}(a_t,y_t).
+$$
+
+危险 W→C checkpoint 权重为 1.5；其他 checkpoint 根据剩余 Dense 比例加权，越早且安全的点得到更高节省价值权重。
+
+对第 `i` 条轨迹的危险集合：
+
+$$
+D_i=\{t:y_{i,t}=1\}.
+$$
+
+当前修复后的最弱点聚合使用 normalized log-mean-exp：
+
+$$
+\widetilde m_i=-\beta\left[
+\log\sum_{t\in D_i}\exp(-a_{i,t}/\beta)-\log|D_i|
+\right].
+$$
+
+$$
+L_{tr}=\frac1{|\mathcal I_+|}\sum_{i\in\mathcal I_+}
+\operatorname{softplus}(-\widetilde m_i).
+$$
+
+$$
+L=L_{pt}+\lambda_{tr}L_{tr},\qquad
+\beta=0.5,\quad\lambda_{tr}=1.
+$$
+
+减去 `log|D_i|` 后，当一条危险轨迹上所有 logits 相同时，trajectory loss 不再随危险 checkpoint 数增长。回归测试位于 `tests/test_normalized_softmin_v1.py`。
+
+## 5. 在线策略
+
+`q_t` 是“停止会破坏未来修正”的风险分数，因此：
+
+$$
+\pi_t=\begin{cases}
+\mathrm{continue},&q_t>\tau,\\
+\mathrm{stop},&q_t\le\tau.
+\end{cases}
+$$
+
+取首个满足停止条件的 checkpoint；若无满足点则回退 Dense。停止后只追加一次最终答案 suffix 并生成一次短答案。在线阶段没有逐 checkpoint forced-answer、多样本投票或答案解析，所以 stopper 是 pure hidden-state one-step readout。
+
+阈值只用独立 calibration 问题选择，held-out/OOD 测试不参与模型、阈值或校准策略选择。校准策略见 `docs/CALIBRATION.md`。

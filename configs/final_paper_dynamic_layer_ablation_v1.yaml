@@ -1,0 +1,80 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_dynamic_layer8_20_35_ablation_v1
+report_label: 风险约束动态停止层选择消融（zero-based 8/20/35）
+seed:
+  global_generation: 20260803
+  probe_primary: 0
+  bootstrap: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+checkpoint:
+  schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+features:
+  feature_kind: full_no_delta
+  definition: '[h_t; t; log(1+t); delta_t; entropy_tail8; norm(delta_h_t); cosine(h_t,delta_h_t)]'
+  layer_candidates_zero_based: [8, 20, 35]
+  input_width: 2566
+probe:
+  shared_architecture: [2566, 384, 96]
+  heads: [stop_correctness, lost_correct_risk, continuation_value]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+dynamic_policy:
+  cost_type: normalized_reasoning_tokens
+  cost_unit_tokens: 4096
+  short_answer_cost: 0
+  lambda_grid: [0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 0.80, 1.60]
+  mu_grid: [0.0, 0.25, 0.50, 1.0, 2.0, 4.0]
+  formal_alpha: [0.01, 0.02, 0.05]
+  formal_delta: 0.05
+  formal_multiple_comparison: finite_grid_bonferroni
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+  objective: minimum_mean_reasoning_tokens
+  calibration_only_selection: true
+  heldout_selection: false
+statistics:
+  bootstrap_replicates: 10000
+datasets:
+  gsm8k:
+    probe_train: 1000
+    calibration: 500
+    heldout: 1319
+    source_replay_root: results/final_paper_primary_v1/main_float16_seed20260803/replay_view/gsm8k
+    bootstrap_stratification: problem
+  mmlu_pro:
+    probe_train: 1000
+    calibration: 500
+    heldout: 1000
+    source_replay_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/replay_view_token
+    bootstrap_stratification: category
+output_root: results/final_paper_dynamic_layer_ablation_v1

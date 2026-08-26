@@ -8,8 +8,14 @@ venv/
 models/
 data/
 results/
+outputs/
 logs/
+monitoring/
+wandb/
 *.pt
 *.pth
 *.safetensors
 *.tar.gz
+*.log
+*.pid
+*.incomplete

@@ -1,0 +1,32 @@
+protocol_id: cps_dynamic_calibration_stability_existing_cache_v1_smoke
+source_protocol: configs/final_paper_dynamic_deployable_os_frontier_v2.yaml
+source_result_root: results/final_paper_dynamic_deployable_os_frontier_v2/dynamic/full
+output_root: results/final_paper_calibration_stability_v1_smoke
+bootstrap:
+  replicates: 20
+  seed: 20260803
+  interval_quantiles: [0.05, 0.50, 0.95]
+selection:
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+  primary_workpoints:
+    gsm8k: [2, 4]
+    mmlu_pro: [4]
+deduplication:
+  source_split: probe_train_internal_validation_only
+  exact_checkpoint_agreement_min: 0.95
+  stop_fallback_agreement_min: 0.98
+  use_validation_pareto_filter: true
+  pareto_objectives: [maximize_accuracy, minimize_lost_correct_rate, minimize_mean_reasoning_tokens]
+stability_gate:
+  modal_candidate_or_cluster_frequency_min: 0.50
+  expected_pairwise_stop_fallback_agreement_min: 0.90
+  calibration_token_reduction_p90_width_max: 0.10
+  calibration_paired_accuracy_delta_p90_width_max: 0.02
+constraints:
+  llm_generation: 0
+  new_samples: 0
+  new_seeds: 0
+  heldout_selection: false
+  candidate_dedup_may_use_calibration: false
+  candidate_dedup_may_use_heldout: false

@@ -1,1 +1,1 @@
-"""与部署行为一致的编译式跳层验证包。"""
+"""Serving-coherent compiled layer-skipping validation package."""

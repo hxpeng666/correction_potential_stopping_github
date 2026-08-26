@@ -1,0 +1,33 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_greedy_forced_main_ablations_v1_smoke
+efficiency_selection: reasoning_tokens_when_valid_replay_timing_is_absent
+seed: {global: 20260803, bootstrap: 20260803}
+probe:
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 8
+  gradient_clip: 2.0
+  max_epochs: 1
+  patience: 1
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+calibration:
+  quantile_grid_size: 21
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.50, 0.70, 0.90]
+dynamic_policy:
+  cost_unit_tokens: 4096
+  lambda_grid: [0.0, 0.2]
+  mu_grid: [0.0, 1.0]
+  formal_alpha: [0.02]
+  formal_delta: 0.05
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+datasets:
+  gsm8k: {probe_train: 20, calibration: 20, heldout: 20}
+  mmlu: {probe_train: 20, calibration: 20, heldout: 20}

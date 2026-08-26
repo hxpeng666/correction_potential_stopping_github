@@ -48,7 +48,7 @@ class FeatureAndTargetTest(unittest.TestCase):
     def test_feature_dimensions_and_trajectory_reset(self):
         full = build_features(self.frame, self.hidden, [8, 20, 35])
         self.assertEqual(full.shape, (5, 5126))
-        # 每道题的第一个检查点使用全零隐藏状态差分。
+        # First checkpoint of each problem has a zero hidden delta.
         self.assertEqual(float(full[0, 2560]), 0.0)
         self.assertEqual(float(full[3, 2560]), 0.0)
         self.assertEqual(build_features(

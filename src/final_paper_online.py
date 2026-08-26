@@ -1,4 +1,4 @@
-"""用于最终论文计时的、无需答案探针的真实在线句子级停止实现。"""
+"""Actual answer-probe-free online sentence-step stopping for final-paper timing."""
 from __future__ import annotations
 
 import time
@@ -127,7 +127,7 @@ def generate_online_stopped(
     dense_seed: int,
     branch_seed_for_checkpoint,
 ) -> dict[str, Any]:
-    """解码一条轨迹，并且只在句子边界运行仅依赖隐藏状态的停止器。"""
+    """Decode one trajectory and run the hidden-only stopper only at sentence boundaries."""
     device = input_ids.device
     layer = int(probe_bundle["run_spec"]["layer"])
     feature_kind = str(probe_bundle["run_spec"]["feature_kind"])
@@ -332,7 +332,7 @@ def generate_online_dense(
     generation: dict[str, Any],
     seed: int,
 ) -> dict[str, Any]:
-    """与策略匹配的批大小 1 完整推理计时，不进行逐令牌同步。"""
+    """Matched batch-1 Dense timing without per-token synchronization."""
     generator = torch.Generator(device=input_ids.device).manual_seed(seed)
     eos_value = tokenizer.eos_token_id
     eos = set(eos_value if isinstance(eos_value, list) else [eos_value])

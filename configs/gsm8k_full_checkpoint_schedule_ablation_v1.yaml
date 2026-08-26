@@ -1,0 +1,83 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_gsm8k_full_checkpoint_schedule_greedy_v1
+report_label: GSM8K full-trajectory checkpoint schedule ablation, greedy forced answers
+seed:
+  global: 20260803
+  probe_primary: 0
+  bootstrap: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  local_path: models/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_max_new_tokens: 4096
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+checkpoint:
+  range_filter: none
+  reasoning_end: first_think_close_or_full_dense_content
+  schedules: [sentence, fixed_budget, prefix_stride, lynx_cue, paragraph, hybrid]
+  sentence_minimum_gap: 8
+  fixed_token_budgets: [16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096]
+  prefix_stride: 128
+  cue_patterns: [hmm, wait, alternatively]
+  hybrid_minimum_gap: 32
+  hybrid_maximum_gap: 128
+features:
+  primary_kind: full_no_delta
+  primary_width: 2566
+  layer_zero_based: 20
+probe:
+  shared_architecture: [2566, 384, 96]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+calibration:
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+dynamic_policy:
+  accuracy_epsilon: 0.01
+comparison:
+  targets:
+    correctness: {definition: "P(c_t=1|z_t)", loss: bce}
+    consistency: {definition: "P(a_t=a_dense|z_t)", loss: bce}
+    last_switch: {definition: "P(t is after the last observed answer switch|z_t)", loss: bce}
+    correction_bce: {method: correction, definition: "P(c_t=0 and dense_success=1|z_t)", loss: bce}
+  primary_budget: 2
+  secondary_budgets: [1, 4]
+  schedule_selection_scope: calibration_only
+  schedule_ranking: mean_rank_across_four_targets_at_B2_then_mean_checks_then_B1
+  lightweight_selection: minimum_mean_checks_within_5_percent_of_best_average_calibration_B2_tokens
+datasets:
+  gsm8k:
+    source_root: results/final_paper_greedy_forced_v1/selected_common_cache/gsm8k/merged
+    probe_train: 1000
+    calibration: 500
+    heldout: 1319
+output_root: results/gsm8k_full_checkpoint_schedule_ablation_v1

@@ -50,6 +50,7 @@ class ProtocolTest(unittest.TestCase):
         values = checkpoint_schedules([63, 64, 70, 72, 80, 769], 900)
         self.assertEqual(values["fixed"], [64, 96, 128, 256, 512, 768])
         self.assertEqual(values["sentence"], [64, 72, 80])
+        self.assertTrue(all(64 <= x <= 768 for x in values["hybrid"]))
 
 
 if __name__ == "__main__":

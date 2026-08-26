@@ -1,16 +1,33 @@
-# 发布包验证记录
+# 发布版验证
 
-本仓库最初于 2026-08-07 完成发布包验证，并于 2026-08-09 针对单种子 MMLU-1k 协议更新验证：
+上传前执行以下设备无关验证：
 
-- `src/`、`scripts/` 和 `tests/` 中所有 Python 文件均通过 AST 和字节码语法检查。
-- 所有命令行脚本均能正常导入并显示 `--help`。
-- 2026-08-07 的完整单元测试共 17 项，全部通过。
-- 测试环境为 Python 3.11.15、PyTorch 2.6.0、Transformers 4.53.3、NumPy 2.1.3、pandas 2.2.3、SciPy 1.17.1 和 scikit-learn 1.6.1。
-- 当前固定 scope 中的数量为：
-  - GSM8K：2,000 个 probe-train、1,000 个策略校准和完整 1,319 个 official test 样本。
-  - MMLU：2,000 个分层 probe-train、1,000 个策略校准和覆盖全部 57 学科的 MMLU-1k；每科 17 或 18 题。
-- 本地生成的六组 sample ID 已与正式运行的冻结 scope 逐项比较，全部完全一致。
-- 2026-08-09 新增的 scope 测试与无需 PyTorch 的协议测试共 9 项，全部通过；当前本机 Python 未安装 PyTorch，因此依赖 PyTorch 的完整测试留给 GitHub CI 重跑。
-- 仓库扫描确认未包含远程绝对路径、服务器专用环境路径、动态任务队列、生产者—消费者 worker、模型权重、数据集题目、隐藏状态产物或实验结果。
+```bash
+python -m compileall -q src scripts tests
+pytest -q
+python scripts/validate_release.py
+python scripts/test_deepseek7b_probe_pipeline_v1.py \
+  --config configs/deepseek7b_main_v1.yaml
+```
 
-为验证代码整理本身，没有额外重新运行 GPU 推理；参考实现保留了实验代码中冻结的协议和不可变数据划分指纹。
+检查范围：
+
+- 所有发布 Python 文件可编译；
+- label、answer equivalence、checkpoint、feature、policy replay 与 normalized soft-min 回归测试；
+- YAML/JSON 可解析、DeepSeek 路径为仓库相对路径、配置维度和关键协议不变量一致；
+- 不包含权重、`.pt` 缓存、结果或日志；
+- 合成 DeepSeek 3590-D 缓存可完成 probe 训练、经验 B 阈值回放与 AIME-style OOD frozen-probe 评测。
+
+合成 smoke 不加载 7B 模型，因此验证的是发布代码拼装、训练和评测契约。完整 GPU generation 仍要求使用者提供权重、数据快照和 CUDA 环境；仓库不宣称在无权重的本地机器上复跑完整数千题采集。
+
+本文件在每次发布时更新为实际命令、通过数量和环境版本；不要把历史通过记录当作当前 commit 的证据。
+
+## 2026-08-26 本地发布验证
+
+- Python 3.13.5；
+- PyTorch 2.6.0、Transformers 4.53.3、NumPy 2.1.3、pandas 2.2.3、SciPy 1.15.3、scikit-learn 1.6.1；
+- `compileall`：通过；
+- `pytest -q`：47 passed；
+- `validate_release.py`：190 个 Python、47 个 YAML、2 个 JSON 均通过语法/解析/路径/协议检查；
+- 15 个核心 CLI 的 `--help` import 检查：通过；
+- DeepSeek 3590-D synthetic contract：correctness 与 BCE+normalized-trajectory 训练、经验 B replay、AIME frozen-probe OOD 评测全部完成。

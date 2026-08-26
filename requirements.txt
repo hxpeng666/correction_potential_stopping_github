@@ -1,16 +1,11 @@
-# 请先根据本机驱动安装匹配的 CUDA 版 PyTorch：
-# https://pytorch.org/get-started/locally/
+# The exact validated server versions are listed in README.md.
 torch>=2.6,<2.7
-transformers==4.53.3
-tokenizers==0.21.4
-accelerate==1.9.0
-huggingface_hub>=0.33,<1
-safetensors>=0.4
-numpy==2.1.3
-pandas==2.2.3
-pyarrow>=16,<22
-scikit-learn==1.6.1
-scipy>=1.10,<2
+transformers>=4.53,<4.54
+accelerate>=0.33
+numpy>=2.1,<2.2
+pandas>=2.2,<2.3
+scikit-learn>=1.6,<1.7
+scipy>=1.10
 PyYAML>=6.0
-matplotlib>=3.9,<4
-pytest>=8,<9
+datasets>=2.18
+nltk>=3.9

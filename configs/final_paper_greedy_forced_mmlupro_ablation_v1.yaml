@@ -1,0 +1,105 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_sentence_greedy_forced_mmlupro_main_ablations_v1
+report_label: Greedy forced-answer 主要消融（MMLU-Pro-1k）
+efficiency_selection: reasoning_tokens_only
+source_protocol_id: cps_qwen3_4b_fp16_sentence_empiricalB_mmlupro_train1000_cal500_test1000_greedy_forced_v1
+seed:
+  global: 20260803
+  global_generation: 20260803
+  probe_primary: 0
+  internal_split: 0
+  batch: 0
+  policy_action: 20260803
+  bootstrap: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  dense_max_new_tokens: 4096
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+checkpoint:
+  schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+features:
+  primary_kind: full_no_delta
+  primary_definition: '[h_t; t; log(1+t); delta_t; entropy_tail8; norm(delta_h_t); cosine(h_t,delta_h_t)]'
+  primary_width: 2566
+  layer_zero_based: 20
+probe:
+  shared_architecture: [2566, 384, 96]
+  architecture: [2566, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+  correction_positive_weight: 1.5
+  correction_negative_weight: 1_plus_remaining
+calibration:
+  quantile_grid_size: 101
+  threshold_quantiles: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  empirical_lost_correct_B: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+dynamic_policy:
+  continuation_semantics: 'Q_cont(z_t)=E[-lambda*delta_t_next/4096+V(z_next)|z_t]'
+  deployment_future_cost_access: forbidden
+  cost_type: normalized_reasoning_tokens
+  cost_unit_tokens: 4096
+  short_answer_cost: 0
+  lambda_grid: [0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 0.80, 1.60]
+  mu_grid: [0.0, 0.25, 0.50, 1.0, 2.0, 4.0]
+  formal_alpha: [0.01, 0.02, 0.05]
+  formal_delta: 0.05
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+  objective: minimum_mean_reasoning_tokens
+  calibration_only_selection: true
+  heldout_selection: false
+statistics:
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260803
+datasets:
+  mmlu_pro:
+    probe_train: 1000
+    calibration: 500
+    heldout: 1000
+    replay_root: results/final_paper_greedy_forced_mmlupro_v1/selected_common_cache/mmlu_pro/merged
+    old_sampled_root: results/final_paper_mmlu_pro_independent_token_v2_train1000_cal500_test1000/replay_view_token
+    bootstrap_stratification: category
+ablations:
+  dynamic_variants: [full, no_trajectory, one_step_value, dense_endpoint_value]
+  static_targets:
+    - {method: correction, loss: bce}
+    - {method: correction, loss: bce_traj}
+    - {method: correctness, loss: bce}
+    - {method: consistency, loss: bce}
+    - {method: last_switch, loss: bce}
+  feature_variants: [full_no_delta, h_only, full, main_no_entropy, main_no_position, main_no_geometry]
+output_root: results/final_paper_greedy_forced_mmlupro_ablation_v1

@@ -1,0 +1,74 @@
+primary: false
+runnable: true
+protocol_id: cps_deepseek_r1_distill_qwen_7b_paragraph_13k_exit48_mathcat200x100_ood_v2
+report_label: DeepSeek-R1-Distill-Qwen-7B paragraph checkpoint five-target ablation with category-balanced MATH supervision
+seed: 20260820
+model:
+  id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  local_path: models/DeepSeek-R1-Distill-Qwen-7B
+  dtype: bfloat16
+  attention_backend: sdpa
+  frozen: true
+  hidden_size: 3584
+  num_hidden_layers: 28
+generation:
+  dense_max_new_tokens: 13000
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  do_sample: true
+  force_answer_max_new_tokens: 48
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+checkpoint:
+  schedule: paragraph
+  boundary_regex: "\\n\\s*\\n+"
+  range_filter: none
+  zero_checkpoint_policy: dense_fallback
+  reasoning_end: first_think_close_or_full_dense_content
+features:
+  primary_kind: full_no_delta
+  primary_width: 3590
+  layer_zero_based: 16
+probe:
+  shared_architecture: [3590, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  trajectory_softmin_beta: 0.5
+  trajectory_weight: 1.0
+calibration:
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+dynamic_policy:
+  accuracy_epsilon: 0.01
+data:
+  prepared_root: data/deepseek7b_main_v2
+  split_unit: problem
+  gsm8k: {probe_train: 1000, calibration: 500, heldout: 1319}
+  math:
+    probe_train: 1400
+    calibration: 700
+    source: hendrycks_math_train
+    categories: [algebra, counting_and_probability, geometry, intermediate_algebra, number_theory, prealgebra, precalculus]
+    per_category: {probe_train: 200, calibration: 100}
+  math500: {heldout: 500, role: ood_test}
+  aime: {heldout: 30, role: ood_test, train_and_calibration_source: math}
+cache_migration:
+  source_protocol_id: cps_deepseek_r1_distill_qwen_7b_paragraph_13k_exit48_v1
+  source_output_root: results/deepseek7b_main_v1
+  require_exact_record_match: true
+output_root: results/deepseek7b_main_v2

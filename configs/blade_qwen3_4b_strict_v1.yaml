@@ -1,0 +1,123 @@
+protocol_id: blade_qwen3_4b_frozen_common_scope_v1
+report_label: BLADE method-faithful reproduction on frozen Qwen3-4B trajectories
+seed: 20260803
+
+source:
+  paper: https://arxiv.org/abs/2607.28966
+  pdf_sha256: d7d88cfb0d02dff059a858647f298d7f2c1e1f679c46f7ffa82e24d8bfbec319
+  arxiv_source_sha256: 499808b3c635cd0ce78d8e95e8d01aeb3141b7387ba58aeb2bf646a4a85d6445
+  code: null
+  code_search_date: 2026-08-23
+
+model:
+  id: Qwen/Qwen3-4B
+  local_path: models/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  frozen: true
+  decoder_layers: 36
+  hidden_size: 2560
+
+common_scope:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_max_new_tokens: 4096
+  split_unit: problem
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  force_answer_max_new_tokens: 16
+  online_force_answer_strategy: greedy_argmax
+  prompt_tokens_excluded: true
+  total_token_cost_includes_forced_answer: true
+
+datasets:
+  gsm8k:
+    source_root: results/final_paper_greedy_forced_v1/selected_common_cache/gsm8k/merged
+    paragraph_cache_root: results/gsm8k_full_checkpoint_schedule_ablation_v1/cache/paragraph
+    probe_train: 1000
+    calibration: 500
+    heldout: 1319
+  mmlu_pro:
+    source_root: results/final_paper_greedy_forced_mmlupro_v1/selected_common_cache/mmlu_pro/merged
+    paragraph_cache_root: results/mmlu_pro_checkpoint_followup_v1/cache/paragraph
+    probe_train: 1000
+    calibration: 500
+    heldout: 1000
+
+checkpoints:
+  train_types: [sentence, self_doubt, paragraph]
+  inference_types: [sentence, self_doubt]
+  sentence_splitter: nltk_sent_tokenize
+  self_doubt_cues: [hmm, wait, alternatively]
+  self_doubt_position: after_cue_token
+  paragraph_definition: frozen_double_newline_schedule
+  deduplicate_same_token_position: true
+  overlap_priority: self_doubt
+
+strict_clean_supervision:
+  completions_per_checkpoint: 16
+  positive_rule: all_16_correct
+  negative_rule: all_16_wrong
+  mixed_rule: discard_from_supervised_training
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  do_sample: true
+  max_new_tokens: 16
+  independent_seed_key: [seed, dataset, split, problem_id, checkpoint, completion_index]
+
+apls:
+  selected_layers: 4
+  selection_runs: 10
+  selection_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  projection_width: 128
+  # The paper omits widths, but these are the unique simple widths (under the
+  # published architecture) that reproduce its Qwen3-8B Table-4 parameter
+  # counts: 11.832961M dense and 4.244097M compact parameters.
+  dense_head_dims: [2048, 768]
+  compact_head_dims: [256, 192]
+  layer_norm_per_layer: true
+  shared_layer_projection: true
+  topk_estimator: straight_through
+  gate_softmax_temperature: 1.0
+  kd_temperature: 1.0
+  kd_weight: 1.0
+  classification_weight: 1.0
+  final_layer_tie_break: mean_gate_rank
+  compact_input: concatenated_raw_selected_layer_hidden_states
+
+training:
+  combined_probe_corpus: [gsm8k, mmlu_pro]
+  internal_validation_fraction: 0.20
+  internal_split_seed: 0
+  epochs_dense: 100
+  epochs_selector: 100
+  epochs_compact: 100
+  batch_size: 256
+  optimizer: Adam
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  class_balanced_bce: true
+  model_selection_metric: validation_auroc
+
+calibration:
+  method: class_conditional_split_conformal_singleton_positive
+  deltas: [0.002, 0.003, 0.005, 0.01]
+  primary_selection: calibration_max_aes
+  heldout_selection_forbidden: true
+
+policy:
+  self_doubt_positive_confirmations: 1
+  sentence_positive_confirmations: 2
+  sentence_streak_reset_on_negative_sentence: true
+  self_doubt_negative_does_not_reset_sentence_streak: true
+  no_accepted_checkpoint: dense_fallback
+
+reporting:
+  metrics: [accuracy, accuracy_delta_pp, generated_response_tokens, total_token_reduction, lost_correct, helped, stop_rate, checks, aes]
+  report_all_deltas: true
+  descriptive_test_oracle_best_aes: true
+  bootstrap_replicates: 10000
+
+output_root: results/blade_qwen3_4b_strict_v1

@@ -1,4 +1,4 @@
-"""最终论文完整推理、检查点分支和在线运行共用的推理工具。"""
+"""Shared inference utilities for final-paper dense, checkpoint, and online runs."""
 from __future__ import annotations
 
 import hashlib
@@ -126,7 +126,7 @@ def artifact_complete(path: Path, problem_id: str) -> bool:
 
 
 class PositionHiddenCapture:
-    """在一次教师强制前向传播中捕获解码器层的指定位置。"""
+    """Capture selected positions from decoder layers during one teacher-forced pass."""
 
     def __init__(self, model, layer_indices: list[int]):
         layers = model.model.layers

@@ -1,0 +1,47 @@
+protocol_id: cps_qwen3_4b_sentence_empiricalB_seed20260803_train1000_cal500_mmlu1k_greedy_forced_v1
+parent_protocol_id: cps_qwen3_4b_sentence_empiricalB_seed20260803_train1000_cal500_mmlu1k_v1
+status: collecting
+objective: recollect_only_checkpoint_forced_answers_with_greedy_argmax
+seed:
+  global: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+forced_answer_decoding:
+  strategy: greedy_argmax
+  do_sample: false
+  temperature: null
+  top_p: 1.0
+  top_k: 0
+  max_new_tokens: 16
+  suffix: "\n</think>\n\n\\boxed{"
+preservation:
+  dense_trajectories: byte_equivalent_values_from_source_artifact
+  hidden_states: byte_equivalent_values_from_source_artifact
+  prompts: unchanged
+  checkpoints: unchanged
+  parser: unchanged
+  direct_baseline: unchanged_sampled_source_artifact
+datasets:
+  gsm8k:
+    source_selected_cache_root: results/final_paper_replay_v4/legacy_empirical_protocol_existing_fp16_seed20260803_train1000_cal500_mmlu1000/selected_common_cache/gsm8k
+    source_protocol_fingerprint: d6bbb3b0a8b5be46eab185b8d1a19ab5aa95ae14a06d385aede800736be42224
+    expected_counts:
+      probe_train: 1000
+      calibration: 500
+      heldout: 1319
+  mmlu:
+    source_selected_cache_root: results/final_paper_replay_v4/legacy_empirical_protocol_existing_fp16_seed20260803_train1000_cal500_mmlu1000/selected_common_cache/mmlu
+    source_protocol_fingerprint: a97d463bdb86d9df90cb1a106f4237420e40e876e6b068193c955e06045b66f0
+    expected_counts:
+      probe_train: 1000
+      calibration: 500
+      heldout: 1000
+output_root: results/final_paper_greedy_forced_v1
+queue_root: results/final_paper_greedy_forced_v1/queue
+cache_root: results/final_paper_greedy_forced_v1/selected_common_cache
+logs_root: logs/final_paper_greedy_forced_v1

@@ -1,4 +1,4 @@
-"""最终论文实验的协议常量、提示词、解析器与检查点计划。"""
+"""Final-paper protocol constants, prompts, parsers, and checkpoint schedules."""
 from __future__ import annotations
 
 import bisect
@@ -68,7 +68,7 @@ BOUNDARY = re.compile(r"\n+|[.!?;]+(?:[\"')\]]*)?(?=\s|$)")
 
 
 def parse_mcq_answer(text: str | None) -> str | None:
-    """只解析明确的方框答案或明确声明的最终答案。"""
+    """Parse only an explicit boxed answer or explicit Final answer declaration."""
     if not text:
         return None
     boxed = BOXED_MCQ.findall(text)
@@ -162,6 +162,8 @@ def checkpoint_schedules(
     minimum: int = 64,
     maximum: int = 768,
     sentence_gap: int = 8,
+    hybrid_minimum_gap: int = 32,
+    hybrid_maximum_gap: int = 128,
     fixed: Sequence[int] = (64, 96, 128, 256, 512, 768),
 ) -> dict[str, list[int]]:
     upper = min(int(maximum), int(content_tokens))
@@ -173,4 +175,13 @@ def checkpoint_schedules(
         if minimum <= checkpoint <= upper and checkpoint - last >= sentence_gap:
             sentence.append(checkpoint)
             last = checkpoint
-    return {"fixed": fixed_values, "sentence": sentence}
+    hybrid: list[int] = []
+    semantic_set = set(semantic_values)
+    last = 0
+    for checkpoint in range(minimum, upper + 1):
+        if checkpoint - last < hybrid_minimum_gap:
+            continue
+        if checkpoint in semantic_set or checkpoint - last >= hybrid_maximum_gap:
+            hybrid.append(checkpoint)
+            last = checkpoint
+    return {"fixed": fixed_values, "sentence": sentence, "hybrid": hybrid}

@@ -1,0 +1,79 @@
+primary: false
+runnable: true
+protocol_id: cps_qwen3_4b_fp16_gsm8k_selective13k_paragraph_greedy_v1
+report_label: Qwen3-4B GSM8K selective 13K paragraph main-method reevaluation
+seed:
+  global: 20260803
+  probe_primary: 0
+  bootstrap: 20260803
+model:
+  id: Qwen/Qwen3-4B
+  local_path: models/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_max_new_tokens: 13000
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  reuse_forced_answer_branches: false
+checkpoint:
+  range_filter: none
+  reasoning_end: first_think_close_or_full_dense_content
+  schedules: [paragraph]
+  sentence_minimum_gap: 8
+  fixed_token_budgets: [16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 13000]
+  prefix_stride: 128
+  cue_patterns: [hmm, wait, alternatively]
+  hybrid_minimum_gap: 32
+  hybrid_maximum_gap: 128
+features:
+  primary_kind: full_no_delta
+  primary_width: 2566
+  layer_zero_based: 20
+probe:
+  shared_architecture: [2566, 384, 96]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  trajectory_softmin_beta: 0.5
+  gamma_risk: 1.0
+  gamma_trajectory: 1.0
+  value_huber_beta: 1.0
+calibration:
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  historical_workpoints: {strict: 1, balanced: 2, aggressive: 4}
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+dynamic_policy:
+  accuracy_epsilon: 0.01
+comparison:
+  targets:
+    correction_bce: {method: correction, definition: "P(c_t=0 and dense_success=1|z_t)", loss: bce}
+    correction_trajectory_normalized: {method: correction, definition: "P(c_t=0 and dense_success=1|z_t)", loss: bce_traj}
+  primary_budget: 2
+  secondary_budgets: [1, 4]
+datasets:
+  gsm8k:
+    source_root: results/qwen3_4b_gsm8k_selective13k_method_v1/dense_selected
+    probe_train: 53
+    calibration: 26
+    heldout: 78
+output_root: results/qwen3_4b_gsm8k_selective13k_method_v1

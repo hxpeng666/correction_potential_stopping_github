@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""准备不可变的单随机种子 GSM8K 与 MMLU 论文数据划分。
+"""Prepare immutable full GSM8K and MMLU final-paper data/split manifests.
 
-受保护的测试答案会复制到评估文件中，但绝不进入辅助学科路由器、探针训练、
-验证或阈值校准。固定快照中的 MMLU ``auxiliary_train`` 学科列为空；本实现
-根据其与开发集及验证集 TF-IDF 中心的相似度确定性分配学科，然后按轮转顺序
-为每个学科分配 120 道不重复的辅助题，最后应用预注册的平衡 4,000/1,000
-配额。该限制以及每个被选中的来源行都会记录在 ``mmlu_split.json`` 中。
+The protected test answers are copied into evaluation files but never enter the
+auxiliary subject router, probe training, validation, or threshold calibration.
+MMLU's cached auxiliary_train has an empty subject column. We therefore assign a
+subject deterministically using TF-IDF similarity to dev+validation centroids,
+then allocate 120 unique auxiliary questions per subject in round-robin order.
+This limitation and every selected source row are recorded in mmlu_split.json.
 """
 from __future__ import annotations
 
@@ -19,7 +20,6 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
-from huggingface_hub import snapshot_download
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
 
@@ -38,35 +38,9 @@ from src.final_paper_protocol import (
 
 GSM_REVISION = "740312add88f781978c0658806c59bc2815b9866"
 MMLU_REVISION = "c30699e8356da336a370243923dbaf21066bb9fe"
-
-
-def resolve_snapshot(
-    explicit: Path | None,
-    repo_id: str,
-    revision: str,
-) -> Path:
-    if explicit is not None:
-        return explicit.expanduser().resolve()
-    return Path(
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            revision=revision,
-        )
-    )
-
-
-def order_key(seed: int, dataset: str, subject: str, problem_id: str) -> str:
-    value = f"{seed}:{dataset}:{subject}:{problem_id}"
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def balanced_quota(total: int) -> dict[str, int]:
-    base, remainder = divmod(total, len(MMLU_SUBJECTS))
-    return {
-        subject: base + int(index < remainder)
-        for index, subject in enumerate(MMLU_SUBJECTS)
-    }
+HF_HOME = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+DEFAULT_GSM = HF_HOME / "hub" / f"datasets--openai--gsm8k/snapshots/{GSM_REVISION}/main"
+DEFAULT_MMLU = HF_HOME / "hub" / f"datasets--cais--mmlu/snapshots/{MMLU_REVISION}"
 
 
 def atomic_json(value: Any, path: Path) -> None:
@@ -126,7 +100,15 @@ def prepare_gsm8k(source: Path, output: Path, split_path: Path, seed: int) -> di
     test = dataframe_rows(source / "test-00000-of-00001.parquet")
     if len(train) != 7473 or len(test) != 1319:
         raise ValueError(f"unexpected GSM8K counts: train={len(train)}, test={len(test)}")
-    def convert(frame: pd.DataFrame, ids: Iterable[int], source_split: str):
+    permutation = np.random.default_rng(seed).permutation(len(train))
+    probe_ids = permutation[:6473].astype(int).tolist()
+    calibration_ids = permutation[6473:].astype(int).tolist()
+    if len(probe_ids) != 6473 or len(calibration_ids) != 1000:
+        raise AssertionError("invalid GSM8K split sizes")
+    if set(probe_ids) & set(calibration_ids) or len(set(probe_ids + calibration_ids)) != 7473:
+        raise AssertionError("GSM8K split is not a complete disjoint permutation")
+
+    def convert(frame: pd.DataFrame, ids: list[int], source_split: str):
         for index in ids:
             row = frame.iloc[index]
             yield {
@@ -136,47 +118,35 @@ def prepare_gsm8k(source: Path, output: Path, split_path: Path, seed: int) -> di
                 "answer": str(row["answer"]),
             }
 
-    train_rows = list(convert(train, range(len(train)), "train"))
-    ordered = sorted(
-        train_rows,
-        key=lambda row: order_key(seed, "gsm8k", "", str(row["problem_id"])),
-    )
-    rows_by_split = {
-        "probe_train": ordered[:5000],
-        "calibration": ordered[5000:6000],
-        "heldout": list(convert(test, range(len(test)), "test")),
-    }
     files: dict[str, Any] = {}
-    for name, rows in rows_by_split.items():
+    for name, frame, ids, source_split in (
+        ("probe_train", train, probe_ids, "train"),
+        ("calibration", train, calibration_ids, "train"),
+        ("heldout", test, list(range(len(test))), "test"),
+    ):
         path = output / f"{name}.jsonl"
-        count, fingerprint = atomic_jsonl(rows, path)
+        count, fingerprint = atomic_jsonl(convert(frame, ids, source_split), path)
         files[name] = {
+            "path": str(path.relative_to(ROOT)),
             "count": count,
             "sha256": fingerprint,
-            "problem_ids": [str(row["problem_id"]) for row in rows],
         }
-    probe_ids = [int(row["source_index"]) for row in rows_by_split["probe_train"]]
-    calibration_ids = [
-        int(row["source_index"]) for row in rows_by_split["calibration"]
-    ]
-    unused_ids = [str(row["problem_id"]) for row in ordered[6000:]]
-    if set(probe_ids) & set(calibration_ids):
-        raise AssertionError("GSM8K probe/calibration overlap")
-    if len(set(probe_ids + calibration_ids)) + len(unused_ids) != 7473:
-        raise AssertionError("GSM8K official train accounting failed")
     split = {
-        "schema_version": 2,
-        "protocol_id": "final_paper_replay_v2",
+        "schema_version": 1,
         "dataset": "openai/gsm8k",
+        "config": "main",
+        "hub_revision": GSM_REVISION,
         "seed": seed,
-        "selection": "sha256(seed,dataset,split-independent sample_id) order",
+        "permutation_algorithm": "numpy.random.default_rng(seed).permutation(7473)",
+        "probe_train_source_indices": probe_ids,
+        "calibration_source_indices": calibration_ids,
+        "heldout_source_indices": list(range(len(test))),
         "files": files,
-        "unused_official_train_problem_ids": unused_ids,
         "invariants": {
-            "probe_train": 5000,
-            "calibration": 1000,
-            "official_test": 1319,
-            "test_used_for_training_threshold_or_scaler": False,
+            "official_train_used": 7473,
+            "official_train_dropped": 0,
+            "official_test_used": 1319,
+            "official_test_used_for_fitting_or_thresholds": False,
         },
     }
     split["fingerprint"] = canonical_fingerprint(split)
@@ -344,36 +314,13 @@ def prepare_mmlu(
                 ),
             }
 
-    probe_quota = balanced_quota(4000)
-    calibration_quota = balanced_quota(1000)
-    probe_rows: list[dict[str, Any]] = []
-    calibration_rows: list[dict[str, Any]] = []
-    selected_rows_by_subject: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    probe_rows = []
+    calibration_rows = []
     for subject in MMLU_SUBJECTS:
-        initial_routed = list(
-            routed_rows(subject, selected[subject][:100], "probe_train")
-        ) + list(
+        probe_rows.extend(routed_rows(subject, selected[subject][:100], "probe_train"))
+        calibration_rows.extend(
             routed_rows(subject, selected[subject][100:120], "calibration")
         )
-        candidates = sorted(
-            initial_routed,
-            key=lambda row: order_key(
-                seed,
-                "mmlu",
-                subject,
-                str(row["problem_id"]),
-            ),
-        )
-        p_count = probe_quota[subject]
-        c_count = calibration_quota[subject]
-        local_probe = candidates[:p_count]
-        local_calibration = candidates[p_count:p_count + c_count]
-        probe_rows.extend(local_probe)
-        calibration_rows.extend(local_calibration)
-        selected_rows_by_subject[subject] = {
-            "probe_train": local_probe,
-            "calibration": local_calibration,
-        }
     demo_rows = [
         row
         for subject in MMLU_SUBJECTS
@@ -395,45 +342,52 @@ def prepare_mmlu(
         path = output / f"{name}.jsonl"
         count, fingerprint = atomic_jsonl(rows, path)
         files[name] = {
+            "path": str(path.relative_to(ROOT)),
             "count": count,
             "sha256": fingerprint,
-            "problem_ids": [str(row["problem_id"]) for row in rows],
         }
 
     subject_manifest = {}
     for subject in MMLU_SUBJECTS:
         subject_manifest[subject] = {
-            "probe_train_count": probe_quota[subject],
-            "calibration_count": calibration_quota[subject],
-            "probe_train_problem_ids": [
-                str(row["problem_id"])
-                for row in selected_rows_by_subject[subject]["probe_train"]
-            ],
-            "calibration_problem_ids": [
-                str(row["problem_id"])
-                for row in selected_rows_by_subject[subject]["calibration"]
-            ],
+            "category": mmlu_category(subject),
+            "probe_train_source_indices": selected[subject][:100],
+            "calibration_source_indices": selected[subject][100:120],
+            "dev_source_indices": list(range(len(dev[subject]))),
+            "validation_count_used_for_unlabeled_routing_centroid": len(validation[subject]),
+            "test_source_indices": list(range(len(test[subject]))),
+            "test_count": len(test[subject]),
         }
     split = {
-        "schema_version": 2,
-        "protocol_id": "final_paper_replay_v2",
+        "schema_version": 1,
         "dataset": "cais/mmlu",
+        "hub_revision": MMLU_REVISION,
         "seed": seed,
         "subjects": list(MMLU_SUBJECTS),
-        "selection": "within-routed-subject sha256(seed,dataset,subject,sample_id) order with balanced quotas",
         "subject_manifest": subject_manifest,
         "files": files,
-        "heldout_subject_counts": {
-            subject: len(test[subject]) for subject in MMLU_SUBJECTS
+        "auxiliary_source": {
+            "total_rows": len(auxiliary),
+            "source_subject_values": source_subject_values,
+            "subject_metadata_limitation": (
+                "The official cached auxiliary_train subject column is blank for all rows."
+            ),
+            "routing_method": "TF-IDF cosine similarity to dev+validation subject centroids; deterministic unique round-robin quota allocation.",
+            "routing_uses_test_labels": False,
+            "routing_uses_test_text_for_subject_scoring": False,
+            "test_text_used_only_for_required_exact normalized-question deduplication": True,
+            "tfidf_max_features": max_features,
+            "eligible_unique_rows": len(unique_aux_indices),
+            "protected_overlap_rows_removed": overlap_removed,
+            "within_auxiliary_duplicates_removed": duplicate_removed,
         },
         "invariants": {
-            "probe_train": 4000,
-            "calibration": 1000,
-            "demonstrations": 285,
-            "official_test": 14042,
-            "subjects": 57,
-            "normalized_question_overlap_with_dev_or_test": 0,
-            "test_used_for_training_threshold_or_scaler": False,
+            "probe_train_per_subject": 100,
+            "calibration_per_subject": 20,
+            "demonstrations_per_subject": 5,
+            "official_test_total": 14042,
+            "official_test_used_for_fitting_or_thresholds": False,
+            "probe_calibration_overlap": False,
         },
     }
     split["fingerprint"] = canonical_fingerprint(split)
@@ -443,76 +397,31 @@ def prepare_mmlu(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--gsm-snapshot", type=Path, default=DEFAULT_GSM)
+    parser.add_argument("--mmlu-snapshot", type=Path, default=DEFAULT_MMLU)
+    parser.add_argument("--data-output", type=Path, default=ROOT / "data/final_paper_v1")
     parser.add_argument(
-        "--gsm-snapshot",
-        type=Path,
-        help="可选的本地固定快照；未指定时下载或复用 Hugging Face 缓存。",
-    )
-    parser.add_argument(
-        "--mmlu-snapshot",
-        type=Path,
-        help="可选的本地固定快照；未指定时下载或复用 Hugging Face 缓存。",
-    )
-    parser.add_argument(
-        "--data-output",
-        type=Path,
-        default=ROOT / "data/final_paper_replay_v2",
-    )
-    parser.add_argument(
-        "--split-output",
-        type=Path,
-        default=ROOT / "results/final_paper_replay_v2/splits",
+        "--split-output", type=Path, default=ROOT / "results/final_paper_v1/splits"
     )
     parser.add_argument("--seed", type=int, default=20260803)
     parser.add_argument("--tfidf-max-features", type=int, default=100000)
-    parser.add_argument(
-        "--reference-splits-root",
-        type=Path,
-        default=ROOT / "splits",
-        help="随仓库发布的不可变清单；数据划分漂移时立即中止。",
-    )
     args = parser.parse_args()
 
-    if args.seed != 20260803:
-        raise ValueError("the published single-seed protocol fixes seed=20260803")
-    gsm_source = resolve_snapshot(
-        args.gsm_snapshot,
-        "openai/gsm8k",
-        GSM_REVISION,
-    ) / "main"
-    mmlu_source = resolve_snapshot(
-        args.mmlu_snapshot,
-        "cais/mmlu",
-        MMLU_REVISION,
-    )
     gsm = prepare_gsm8k(
-        gsm_source,
+        args.gsm_snapshot,
         args.data_output / "gsm8k",
         args.split_output / "gsm8k_split.json",
         args.seed,
     )
     print(json.dumps({"phase": "gsm8k", "fingerprint": gsm["fingerprint"]}), flush=True)
     mmlu = prepare_mmlu(
-        mmlu_source,
+        args.mmlu_snapshot,
         args.data_output / "mmlu",
         args.split_output / "mmlu_split.json",
         args.seed,
         args.tfidf_max_features,
     )
     print(json.dumps({"phase": "mmlu", "fingerprint": mmlu["fingerprint"]}), flush=True)
-    reference_root = (
-        args.reference_splits_root
-        if args.reference_splits_root.is_absolute()
-        else ROOT / args.reference_splits_root
-    )
-    for dataset, generated in (("gsm8k", gsm), ("mmlu", mmlu)):
-        reference_path = reference_root / f"{dataset}_split.json"
-        reference = json.loads(reference_path.read_text(encoding="utf-8"))
-        if generated["fingerprint"] != reference["fingerprint"]:
-            raise RuntimeError(
-                f"{dataset} split drift: generated={generated['fingerprint']} "
-                f"reference={reference['fingerprint']}"
-            )
     atomic_json(
         {
             "status": "complete",

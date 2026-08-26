@@ -1,0 +1,36 @@
+protocol_id: cps_dynamic_calibration_expanded_existing_cache_gsm8k962_v3
+source_protocol: configs/final_paper_dynamic_deployable_os_frontier_v2.yaml
+source_result_root: results/final_paper_dynamic_deployable_os_frontier_v2/dynamic/full
+output_root: results/final_paper_calibration_expanded_existing_cache_v3
+dataset: gsm8k
+expanded_calibration_root: results/final_paper_replay_v2/cache/gsm8k/merged/calibration
+expected_calibration_samples: 962
+
+bootstrap:
+  replicates: 10000
+  seed: 20260803
+  interval_quantiles: [0.05, 0.50, 0.95]
+
+selection:
+  empirical_B: [0, 1, 2, 4, 10]
+  accuracy_epsilon: 0.01
+  comparison_modes:
+    historical_absolute_B: true
+    rate_matched_to_500:
+      B0: 0
+      B1: 2
+      B2: 4
+      B4: 8
+      B10: 19
+
+constraints:
+  llm_generation: 0
+  new_samples: 0
+  new_seeds: 0
+  model_refit: false
+  scaler_refit: false
+  candidate_grid_change: false
+  heldout_selection: false
+  source_protocol_fingerprint_required: d6bbb3b0a8b5be46eab185b8d1a19ab5aa95ae14a06d385aede800736be42224
+  dtype_required: float16
+  attention_backend_required: sdpa

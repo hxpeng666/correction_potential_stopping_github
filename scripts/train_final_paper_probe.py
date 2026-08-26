@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""训练并校准一种最终论文停止目标或消融配置。"""
+"""Train and calibrate one final-paper stopper target/ablation configuration."""
 from __future__ import annotations
 
 import argparse
@@ -83,9 +83,6 @@ def evaluate_frozen(
                     float(frozen["threshold"]),
                     include_records=True,
                     fallback_records=fallback_records,
-                    disabled=bool(
-                        frozen.get("dense_fallback", frozen.get("disabled", False))
-                    ),
                 )
             )
             evaluated[family][key] = {
@@ -272,11 +269,7 @@ def main() -> None:
             internal_curve = []
             for threshold, disabled in internal_grid:
                 row = simulate_policy(
-                    validation_frame,
-                    validation_scores,
-                    direction,
-                    threshold,
-                    disabled=disabled,
+                    validation_frame, validation_scores, direction, threshold
                 )
                 row["disabled"] = disabled
                 internal_curve.append(row)

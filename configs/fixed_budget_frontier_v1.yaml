@@ -1,0 +1,40 @@
+protocol_id: qwen3_4b_fixed_relative_budget_frontier_v2
+seed: 20260803
+
+model:
+  local_path: models/Qwen3-4B
+  dtype: float16
+  attention_backend: sdpa
+
+generation:
+  dense_temperature: 0.6
+  dense_top_p: 0.95
+  dense_top_k: 20
+  dense_max_new_tokens: 4096
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  force_answer_strategy: greedy_argmax
+  force_answer_do_sample: false
+  force_answer_max_new_tokens: 16
+
+budget:
+  # Fraction of the complete Dense generated response retained before forcing an answer.
+  retained_fractions: [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  position_rule: floor_fraction_of_dense_generated_tokens
+  minimum_retained_dense_tokens: 1
+  zero_dense_policy: dense_fallback
+
+datasets:
+  gsm8k:
+    source_root: results/final_paper_greedy_forced_v1/selected_common_cache/gsm8k/merged
+    heldout: 1319
+  mmlu_pro:
+    source_root: results/final_paper_greedy_forced_mmlupro_v1/selected_common_cache/mmlu_pro/merged
+    heldout: 1000
+
+reporting:
+  prompt_tokens_excluded: true
+  total_token_cost_includes_forced_answer_suffix_and_generated_answer: true
+  dense_reference: frozen_source_artifact
+  bootstrap_replicates: 10000
+
+output_root: results/qwen3_4b_fixed_relative_budget_frontier_v2

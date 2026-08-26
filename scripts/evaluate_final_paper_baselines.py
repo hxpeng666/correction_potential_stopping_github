@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从缓存轨迹评估完整推理、直接作答、固定预算和检查点诊断。"""
+"""Evaluate Dense, Direct, fixed budgets, and checkpoint diagnostics from cached traces."""
 from __future__ import annotations
 
 import argparse
@@ -251,12 +251,9 @@ def main() -> None:
             "fixed": fixed_record_map,
         }
     heldout_paths = sorted((args.dense_root / "heldout").glob("sample_*.pt"))
-    latency_label = (
-        torch.load(
-            heldout_paths[0], map_location="cpu", weights_only=False
-        ).get("latency_label")
-        if heldout_paths
-        else None
+    replay_v2 = bool(
+        heldout_paths
+        and torch.load(heldout_paths[0], map_location="cpu", weights_only=False).get("latency_label") == "A100 replay-estimated latency"
     )
     payload = {
         "status": "complete",
@@ -265,11 +262,9 @@ def main() -> None:
         "dense_root": str(args.dense_root),
         "checkpoint_root": str(args.checkpoint_root),
         "summaries": summaries,
-        "latency_label": latency_label,
         "timing_note": (
-            f"All latency values are {latency_label}; Direct/forced branch worker timings are excluded."
-            if latency_label
-            else "No replay latency label was found."
+            "All latency values are A100 replay-estimated latency; 2080 Ti branch times are excluded."
+            if replay_v2 else "Dense/Direct are actual isolated per-sample generation timings from collection; fixed-budget values are cached trajectory replay estimates."
         ),
     }
     atomic_json(payload, destination / "baselines.json")

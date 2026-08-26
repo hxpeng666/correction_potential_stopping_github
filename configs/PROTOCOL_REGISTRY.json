@@ -1,0 +1,61 @@
+{
+  "release": "2026-08-26",
+  "protocols": {
+    "qwen3_4b_historical": {
+      "config": "configs/gsm8k_full_checkpoint_schedule_ablation_v1.yaml",
+      "model": "Qwen/Qwen3-4B",
+      "dense_max_new_tokens": 4096,
+      "forced_answer_max_new_tokens": 16,
+      "main_checkpoint_schedule": "paragraph",
+      "hidden_layer_zero_based": 20,
+      "feature_width": 2566,
+      "status": "frozen_historical_protocol"
+    },
+    "deepseek7b_13k": {
+      "config": "configs/deepseek7b_main_v2.yaml",
+      "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+      "dense_max_new_tokens": 13000,
+      "forced_answer_max_new_tokens": 48,
+      "main_checkpoint_schedule": "paragraph",
+      "hidden_layer_zero_based": 16,
+      "feature_width": 3590,
+      "status": "frozen_completed_protocol"
+    },
+    "deepseek7b_selective32k": {
+      "config": "configs/deepseek7b_main_v3_selective32k.yaml",
+      "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+      "dense_max_new_tokens": 32768,
+      "forced_answer_max_new_tokens": 48,
+      "main_checkpoint_schedule": "paragraph",
+      "hidden_layer_zero_based": 16,
+      "feature_width": 3590,
+      "status": "selective_extension_protocol"
+    }
+  },
+  "shared_invariants": {
+    "dense_decoding": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "do_sample": true
+    },
+    "forced_answer_decoding": {
+      "strategy": "greedy_argmax",
+      "do_sample": false,
+      "suffix": "\n</think>\n\n\\boxed{"
+    },
+    "targets": [
+      "correctness",
+      "consistency",
+      "last_switch",
+      "correction_bce",
+      "correction_bce_normalized_trajectory"
+    ],
+    "empirical_B": [0, 1, 2, 4, 10],
+    "trajectory": {
+      "aggregation": "normalized_log_mean_exp_softmin",
+      "beta": 0.5,
+      "lambda_tr": 1.0
+    }
+  }
+}

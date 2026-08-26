@@ -1,0 +1,129 @@
+primary: true
+runnable: true
+status: frozen_after_dtype_pair_audit
+protocol_id: cps_qwen3_4b_sentence_empiricalB_seed20260803_train1000_cal500_mmlu1k_v1
+seed:
+  global: 20260803
+  task_derivation: sha256(global_seed:dataset:split:sample_id:checkpoint)
+  probe_initialization: 0
+  internal_split: 0
+  bootstrap: 20260803
+software:
+  python: "3.10.19"
+  torch: "2.6.0+cu124"
+  transformers: "4.53.3"
+  project_overlay: .final_paper_site
+model:
+  id: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  local_path: models/Qwen3-4B
+  metadata_fingerprint: 1444257116723c44a60884afd78b095b48727cf4a7e17b69d85e55970070d863
+  dtype: float16
+  attention_backend: sdpa
+  enable_thinking: true
+  frozen: true
+generation:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  do_sample: true
+  num_return_sequences: 1
+  dense_max_new_tokens: 4096
+  force_answer_max_new_tokens: 16
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  direct_answer_prefix: "\\boxed{"
+  fixed_budgets: [64, 96, 128, 192, 256, 384, 512, 768]
+checkpoint:
+  primary_schedule: sentence
+  minimum: 64
+  maximum: 768
+  sentence_minimum_gap: 8
+  hybrid_minimum_gap: 32
+  hybrid_maximum_gap: 128
+  boundary_regex: "\\n+|[.!?;]+(?:[\"')\\]]*)?(?=\\s|$)"
+  schedule_ablations: [fixed, hybrid]
+features:
+  primary_layer_zero_based: 20
+  hidden_size: 2560
+  input_width: 5126
+  ordered_fields:
+    - h_t
+    - delta_h_t
+    - t
+    - log1p_t
+    - delta_t
+    - entropy_tail8_top20_renormalized
+    - delta_h_l2
+    - cosine_h_delta
+probe:
+  architecture: [5126, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  correction_positive_weight: 1.5
+  correction_negative_weight: 1_plus_remaining
+  trajectory_softmin_beta: 0.5
+  multitask_heads: false
+calibration:
+  threshold_quantiles: 101
+  selection: first_hit
+  empirical_lost_correct_B: [0, 1, 2, 4, 10]
+  named_workpoints:
+    strict: 1
+    balanced: 2
+    aggressive: 4
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  formal_certified_is_supplement_only: true
+datasets:
+  gsm8k:
+    prepared_root: data/final_paper_replay_v2/gsm8k
+    selected_cache_root: results/final_paper_replay_v4/legacy_empirical_protocol_existing_fp16_seed20260803_train1000_cal500_mmlu1000/selected_common_cache/gsm8k
+    selected_cache_protocol_id: final_paper_replay_v2
+    selected_cache_protocol_fingerprint: d6bbb3b0a8b5be46eab185b8d1a19ab5aa95ae14a06d385aede800736be42224
+    probe_train: 1000
+    policy_calibration: 500
+    heldout: 1319
+    heldout_source: official_test
+    prompt_system: "Solve the grade-school math problem carefully. Think step by step, then end with exactly \\boxed{number}."
+    prompt_user_template: "Problem: {question}"
+  mmlu:
+    prepared_root: data/final_paper_replay_v2/mmlu
+    selected_cache_root: results/final_paper_replay_v4/legacy_empirical_protocol_existing_fp16_seed20260803_train1000_cal500_mmlu1000/selected_common_cache/mmlu
+    selected_cache_protocol_id: final_paper_replay_v2
+    selected_cache_protocol_fingerprint: a97d463bdb86d9df90cb1a106f4237420e40e876e6b068193c955e06045b66f0
+    probe_train: 1000
+    probe_train_source: auxiliary_train
+    policy_calibration: 500
+    policy_calibration_source: auxiliary_train
+    heldout: 1000
+    heldout_source: official_test
+    heldout_subjects: 57
+    heldout_per_subject: 17_or_18
+    demonstrations_per_subject: 5
+    demonstrations_source: dev
+    report_label: MMLU-1k distribution-shift
+replay:
+  label: A100 single-request replay-estimated latency
+  cost_model: results/final_paper_replay_v3/timing_calibration_after_supplement_v1/A100_SINGLE_REQUEST_COST_MODEL.json
+  include_prompt_prefill: true
+  include_reasoning_decode: true
+  include_final_answer_generation: true
+  include_checkpoint_schedule: true
+  include_hidden_features: true
+  include_entropy_statistics: true
+  include_scaler_and_mlp: true
+  zero_overhead_is_supplement_only: true
+statistics:
+  bootstrap_replicates: 10000
+  gsm8k_unit: problem
+  mmlu_unit: subject_stratified_problem
+output_root: results/final_paper_primary_v1

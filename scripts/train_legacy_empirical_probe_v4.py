@@ -47,13 +47,24 @@ from src.utils import atomic_json, load_yaml, seed_everything
 def artifact_manifest(root: Path) -> dict[str, Any]:
     paths = sorted(root.glob("*/sample_*.pt"))
     digest = hashlib.sha256()
+    view_fingerprints: set[str] = set()
     for path in paths:
         relative = path.relative_to(root)
-        digest.update(f"{relative}:{path.stat().st_size}\n".encode("utf-8"))
+        artifact = torch.load(path, map_location="cpu", weights_only=False)
+        fingerprint = str(artifact.get("primary_replay_view_fingerprint"))
+        view_fingerprints.add(fingerprint)
+        digest.update(
+            (
+                f"{relative}:{path.stat().st_size}:{artifact.get('problem_id')}:"
+                f"{artifact.get('dataset')}:{artifact.get('split')}:{artifact.get('dtype')}:"
+                f"{artifact.get('protocol_fingerprint')}:{fingerprint}\n"
+            ).encode("utf-8")
+        )
     return {
         "root": str(root.resolve()),
         "files": len(paths),
-        "name_size_fingerprint": digest.hexdigest(),
+        "artifact_identity_fingerprint": digest.hexdigest(),
+        "primary_replay_view_fingerprints": sorted(view_fingerprints),
     }
 
 
@@ -61,6 +72,18 @@ def strip_records(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     summary = dict(payload)
     records = summary.pop("records")
     return summary, records
+
+
+def global_seed(config: dict[str, Any]) -> int:
+    value = config["seed"]
+    return int(value["global"] if isinstance(value, dict) else value)
+
+
+def calibration_value(config: dict[str, Any], legacy: str, primary: str):
+    calibration = config["calibration"]
+    if legacy in calibration:
+        return calibration[legacy]
+    return calibration[primary]
 
 
 def evaluate_frozen(
@@ -118,13 +141,37 @@ def main() -> None:
     if args.method != "correction" and args.loss != "bce":
         raise ValueError("controlled target baselines use checkpoint BCE only")
     config = load_yaml(args.config)
+    if config.get("primary") is True and config.get("runnable") is not True:
+        raise RuntimeError("论文主配置尚未通过 dtype 配对审计，禁止启动 probe 训练")
     destination = args.output if args.output.is_absolute() else ROOT / args.output
+    invocation_spec = {
+        "protocol_id": config["protocol_id"],
+        "dataset": args.dataset,
+        "method": args.method,
+        "probe_seed": args.seed,
+        "schedule": args.schedule,
+        "layer": args.layer,
+        "feature_kind": args.feature_kind,
+        "loss": args.loss,
+        "raw_input": artifact_manifest(args.raw_root),
+        "probe_config": config["probe"],
+        "calibration_config": config["calibration"],
+        "efficiency_selection": config.get("efficiency_selection", "replay_wall"),
+    }
+    invocation_fingerprint = canonical_fingerprint(invocation_spec)
     complete_path = destination / "phase.complete"
     if args.resume and complete_path.is_file():
         marker = json.loads(complete_path.read_text(encoding="utf-8"))
-        if marker.get("status") == "complete" and (destination / "probe.pt").is_file():
+        if (
+            marker.get("status") == "complete"
+            and marker.get("invocation_fingerprint") == invocation_fingerprint
+            and (destination / "probe.pt").is_file()
+        ):
             print(json.dumps({"status": "skipped_complete", "output": str(destination)}))
             return
+        raise RuntimeError(f"拒绝 resume 不同指纹的 probe 输出：{destination}")
+    if destination.exists() and any(destination.iterdir()):
+        raise RuntimeError(f"拒绝覆盖既有 probe 输出；请使用新的目录或同指纹 --resume：{destination}")
     destination.mkdir(parents=True, exist_ok=True)
     seed_everything(0)
     torch.cuda.set_device(args.gpu)
@@ -284,7 +331,11 @@ def main() -> None:
                 for value, no_stop in threshold_grid(
                     validation_scores,
                     direction,
-                    grid_size=int(config["calibration"]["quantile_grid_size"]),
+                    grid_size=int(
+                        calibration_value(
+                            config, "quantile_grid_size", "threshold_quantiles"
+                        )
+                    ),
                 )
             ]
             internal_curve = []
@@ -350,10 +401,16 @@ def main() -> None:
         frames["calibration"],
         scores["calibration"],
         direction,
-        grid_size=int(calibration_config["quantile_grid_size"]),
+        grid_size=int(
+            calibration_value(config, "quantile_grid_size", "threshold_quantiles")
+        ),
         empirical_budgets=sorted(set(
             int(value) for value in (
-                calibration_config["empirical_lost_correct_budgets"]
+                calibration_value(
+                    config,
+                    "empirical_lost_correct_budgets",
+                    "empirical_lost_correct_B",
+                )
                 + calibration_config.get("rate_matched_empirical_budgets", [])
             )
         )),
@@ -375,7 +432,10 @@ def main() -> None:
     fit_ids = sorted(fit_problem_ids)
     validation_ids = sorted(validation_problem_ids)
     online_workpoints = {}
-    for name, budget in calibration_config["historical_workpoints"].items():
+    workpoints = calibration_value(
+        config, "historical_workpoints", "named_workpoints"
+    )
+    for name, budget in workpoints.items():
         family = "empirical_B"
         key = str(int(budget))
         online_workpoints[name] = {
@@ -390,7 +450,8 @@ def main() -> None:
         "method": args.method,
         "stop_direction": direction,
         "seed": 0,
-        "dense_seed": int(config["seed"]),
+        "dense_seed": global_seed(config),
+        "protocol_id": config["protocol_id"],
         "schedule": args.schedule,
         "layer": args.layer,
         "feature_kind": args.feature_kind,
@@ -407,6 +468,7 @@ def main() -> None:
         "fit_split_seed": 0,
         "fit_fraction": 0.8,
         "scaler_fit_scope": "probe_train_fit_only",
+        "efficiency_selection": config.get("efficiency_selection", "replay_wall"),
     }
     payload = {
         "status": "complete",
@@ -477,6 +539,7 @@ def main() -> None:
     atomic_json(
         {
             "status": "complete",
+            "invocation_fingerprint": invocation_fingerprint,
             "run_spec_fingerprint": payload["run_spec_fingerprint"],
             "best_epoch": int(best[1]),
             "artifacts": ["probe.json", "probe.pt", "scores.pt", "policy_records.pt"],
