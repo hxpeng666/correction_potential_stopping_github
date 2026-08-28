@@ -1,0 +1,88 @@
+primary: true
+runnable: true
+protocol_id: cps_deepseek7b_probe_training_primary_v3
+report_label: Threshold-free single-seed probe training with LTT-only deployment calibration
+seed: 0
+reproducibility:
+  protocol: cps_strict_determinism_v2_runtime_locked
+  runtime_lock: configs/runtime_a100_torch271_cuda126_v1.json
+  require_clean_git: true
+  fixed_training_seed: 0
+  fixed_split_seed: 0
+  additional_seed_selection: false
+model:
+  id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  local_path: Weights/DeepSeek/DeepSeek-R1-Distill-Qwen-7B
+  dtype: bfloat16
+  attention_backend: sdpa
+  frozen: true
+  hidden_size: 3584
+  num_hidden_layers: 28
+generation:
+  dense_max_new_tokens: 13000
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  do_sample: true
+  force_answer_max_new_tokens: 48
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  cap_final_answer_grader: condition_specific_original_or_forced_at_exact_13k
+checkpoint:
+  schedule: paragraph
+  boundary_regex: "\\n\\s*\\n+"
+  range_filter: none
+  zero_checkpoint_policy: dense_fallback
+  reasoning_end: first_think_close_or_full_dense_content
+features:
+  primary_kind: full_no_delta
+  primary_width: 3590
+  layer_zero_based: 16
+probe:
+  shared_architecture: [3590, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.00005
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  model_selection: minimum_validation_objective
+  secondary_diagnostics: [checkpoint_average_precision, checkpoint_auc]
+  trajectory_softmin_beta: 0.5
+  trajectory_weight: 1.0
+calibration:
+  primary_calibrator: trajectory_envelope_ltt
+  candidate_threshold_source: probe_train_only
+  certification_split: independent_calibration_only
+  ltt_alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
+  ltt_delta: 0.05
+  objective: token_reduction_reasoning_only
+  empirical_budget_B_used: false
+data:
+  split_unit: problem
+  original_root: results/deepseek7b_main_v2/cache
+  forced_cap_root: results/deepseek7b_forced_cap_grader_method_v1/views
+  gsm8k: {probe_train: 1000, calibration: 500, heldout: 1319}
+  math:
+    probe_train: 1400
+    calibration: 700
+    source: hendrycks_math_train
+    categories: [algebra, counting_and_probability, geometry, intermediate_algebra, number_theory, prealgebra, precalculus]
+    per_category: {probe_train: 200, calibration: 100}
+  math500: {heldout: 500, role: ood_test}
+  aime: {heldout: 30, role: ood_test, train_and_calibration_source: math}
+training_configuration_evidence:
+  sweep_protocol: configs/deepseek7b_probe_learning_rate_sweep_v1.yaml
+  sweep_output: results/deepseek7b_probe_lr_sweep_v2
+  completed_runs: 40
+  selected_learning_rate: 0.00005
+  selection_uses_calibration: false
+  selection_uses_heldout: false
+  selection_uses_empirical_B: false
