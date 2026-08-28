@@ -41,6 +41,7 @@ from src.deepseek7b_method_exploration_v1 import (
     load_auxiliary_split,
     predict_scores,
     problem_batches,
+    problem_groups,
 )
 from src.final_paper_inference import atomic_torch_save
 from src.legacy_empirical_probe_normalized_v1 import (
