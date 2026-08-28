@@ -278,12 +278,22 @@ def main() -> None:
         help="optional comma-separated probe GPUs assigned round-robin",
     )
     parser.add_argument("--parallel", type=int, default=6)
+    parser.add_argument(
+        "--per-gpu-parallel",
+        type=int,
+        default=1,
+        help="maximum independent deterministic probe processes sharing one GPU",
+    )
     parser.add_argument("--epochs", type=int, default=24)
     parser.add_argument("--patience", type=int, default=6)
     parser.add_argument("--cpu-threads", type=int, default=1)
     args = parser.parse_args()
     if args.cpu_threads != 1:
         raise ValueError("strict reproducibility freezes --cpu-threads 1")
+    if not 1 <= args.per_gpu_parallel <= 8:
+        raise ValueError("--per-gpu-parallel must be in [1, 8]")
+    if args.per_gpu_parallel > args.parallel:
+        raise ValueError("--per-gpu-parallel cannot exceed --parallel")
     sys.path.insert(0, str(PROJECT))
     from src.reproducibility import (
         code_provenance,
@@ -342,6 +352,7 @@ def main() -> None:
         "datasets": args.datasets,
         "axes": args.axes,
         "parallel": args.parallel,
+        "per_gpu_parallel": args.per_gpu_parallel,
         "probe_gpus": probe_gpus,
         "epochs": args.epochs,
         "patience": args.patience,
@@ -353,14 +364,22 @@ def main() -> None:
     }
     atomic_json(state, manifest_path)
 
-    gpu_locks = {gpu: threading.Lock() for gpu in probe_gpus}
+    # Every child is an isolated process with a fixed RNG seed and deterministic
+    # CUDA algorithms.  A bounded semaphore lets several such processes share a
+    # mostly-idle GPU without changing the numerical protocol.  The formal
+    # parent runner certifies serial-vs-concurrent bitwise parity before using a
+    # value greater than one.
+    gpu_slots = {
+        gpu: threading.BoundedSemaphore(args.per_gpu_parallel)
+        for gpu in probe_gpus
+    }
 
     def run_task(item):
         dataset, spec, command, output = item
         log = args.output_root / "logs" / f"screen_{dataset}_{spec['axis']}_{spec['label']}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         assigned_gpu = int(command[command.index("--gpu") + 1])
-        with gpu_locks[assigned_gpu]:
+        with gpu_slots[assigned_gpu]:
             with log.open("a", encoding="utf-8") as handle:
                 handle.write("COMMAND " + json.dumps(command) + "\n")
                 handle.flush()

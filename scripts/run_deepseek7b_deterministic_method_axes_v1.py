@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,20 @@ def run(command: list[str], log: Path, environment: dict[str, str]) -> None:
         )
 
 
+def run_concurrently(
+    jobs: list[tuple[list[str], Path]], environment: dict[str, str]
+) -> None:
+    """Run independent probe processes concurrently and fail on any error."""
+
+    def one(command: list[str], log: Path) -> None:
+        run(command, log, environment)
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = [pool.submit(one, command, log) for command, log in jobs]
+        for future in as_completed(futures):
+            future.result()
+
+
 def smoke_command(
     *, config: Path, data_root: Path, output: Path, gpu: int
 ) -> list[str]:
@@ -90,7 +105,15 @@ def main() -> None:
     parser.add_argument("--aux-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument(
+        "--probe-parallel",
+        type=int,
+        default=1,
+        help="independent deterministic probe processes allowed on the selected GPU",
+    )
     args = parser.parse_args()
+    if not 1 <= args.probe_parallel <= 8:
+        raise ValueError("--probe-parallel must be in [1, 8]")
     config = args.config.resolve()
     config_payload = yaml.safe_load(config.read_text(encoding="utf-8"))
     runtime_lock_value = config_payload.get("reproducibility", {}).get("runtime_lock")
@@ -140,7 +163,11 @@ def main() -> None:
         "aux_root": str(aux_root),
         "output_root": str(output),
         "gpu": args.gpu,
-        "execution": "single process per GPU; strict deterministic algorithms",
+        "execution": (
+            f"up to {args.probe_parallel} independent processes on one GPU; "
+            "strict deterministic algorithms; serial-vs-concurrent bitwise gate"
+        ),
+        "probe_parallel": args.probe_parallel,
         "completed": [],
     }
     atomic_json(state, output / "RUN_MANIFEST.json")
@@ -169,6 +196,46 @@ def main() -> None:
         environment,
     )
     state["completed"].append("determinism_gate")
+    if args.probe_parallel > 1:
+        concurrent_gate = output / "same_gpu_concurrency_gate"
+        jobs = []
+        for name in ("run1", "run2"):
+            jobs.append(
+                (
+                    smoke_command(
+                        config=config,
+                        data_root=data_root,
+                        output=concurrent_gate / name,
+                        gpu=args.gpu,
+                    ),
+                    logs / f"same_gpu_concurrency_{name}.log",
+                )
+            )
+        run_concurrently(jobs, environment)
+        for name in ("run1", "run2"):
+            run(
+                [
+                    sys.executable,
+                    "scripts/audit_deterministic_probe_pair_v1.py",
+                    "--left", str(gate / "run1"),
+                    "--right", str(concurrent_gate / name),
+                    "--output", str(concurrent_gate / f"SERIAL_VS_{name.upper()}.json"),
+                ],
+                logs / f"same_gpu_serial_vs_{name}.log",
+                environment,
+            )
+        run(
+            [
+                sys.executable,
+                "scripts/audit_deterministic_probe_pair_v1.py",
+                "--left", str(concurrent_gate / "run1"),
+                "--right", str(concurrent_gate / "run2"),
+                "--output", str(concurrent_gate / "CONCURRENT_PEER_AUDIT.json"),
+            ],
+            logs / "same_gpu_concurrent_peer.log",
+            environment,
+        )
+        state["completed"].append("same_gpu_concurrency_gate")
     state["status"] = "training_101_core_axes"
     atomic_json(state, output / "RUN_MANIFEST.json")
 
@@ -182,7 +249,8 @@ def main() -> None:
             "--output-root", str(output),
             "--source-root", str(data_root),
             "--gpu", str(args.gpu),
-            "--parallel", "1",
+            "--parallel", str(args.probe_parallel),
+            "--per-gpu-parallel", str(args.probe_parallel),
             "--cpu-threads", "1",
         ],
         logs / "core_axes.log",
@@ -202,7 +270,7 @@ def main() -> None:
                 "--source-root", str(data_root),
                 "--aux-root", str(aux_root),
                 "--gpu", str(args.gpu),
-                "--parallel", "1",
+                "--parallel", str(args.probe_parallel),
                 "--cpu-threads", "1",
             ],
             logs / f"aux_axes_{dataset}.log",

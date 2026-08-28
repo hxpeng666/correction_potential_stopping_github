@@ -144,11 +144,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.cpu_threads != 1:
         raise ValueError("strict reproducibility freezes --cpu-threads 1")
-    if args.parallel != 1:
-        raise ValueError(
-            "strict reproducibility runs one training process per GPU; "
-            "use independent committed runners to distribute across GPUs"
-        )
+    if not 1 <= args.parallel <= 8:
+        raise ValueError("--parallel must be in [1, 8]")
     sys.path.insert(0, str(PROJECT))
     from src.reproducibility import (
         code_provenance,
@@ -179,6 +176,11 @@ def main() -> None:
         "reference_point_loss": "legacy_weighted",
         "dataset": args.dataset,
         "gpu": args.gpu,
+        "parallel": args.parallel,
+        "execution": (
+            "independent seeded processes; same-GPU concurrency certified "
+            "bitwise by the formal parent runner"
+        ),
         "auxiliary_audit": str(audit_path),
         "tasks": len(specs()),
         "completed": [],
