@@ -36,6 +36,69 @@ def forbidden_key_paths(value: Any, prefix: str = "") -> list[str]:
     return found
 
 
+def select_shared_learning_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (row["grader"], row["dataset"], row["method"])
+        groups.setdefault(key, []).append(row)
+    expected_groups = len(GRADERS) * len(DATASETS) * len(METHODS)
+    if len(groups) != expected_groups:
+        raise ValueError(f"expected {expected_groups} groups, got {len(groups)}")
+    aggregate = {
+        learning_rate: {"normalized_regrets": [], "ranks": []}
+        for learning_rate in LEARNING_RATES
+    }
+    for key, group_rows in groups.items():
+        if len(group_rows) != len(LEARNING_RATES):
+            raise ValueError(f"incomplete learning-rate group: {key}")
+        ordered = sorted(
+            group_rows,
+            key=lambda row: (float(row["validation_objective"]), row["learning_rate"]),
+        )
+        best = float(ordered[0]["validation_objective"])
+        denominator = max(abs(best), 1e-12)
+        for rank, row in enumerate(ordered, start=1):
+            learning_rate = float(row["learning_rate"])
+            regret = (float(row["validation_objective"]) - best) / denominator
+            aggregate[learning_rate]["normalized_regrets"].append(regret)
+            aggregate[learning_rate]["ranks"].append(rank)
+    candidates = []
+    for learning_rate, values in aggregate.items():
+        mean_regret = sum(values["normalized_regrets"]) / len(
+            values["normalized_regrets"]
+        )
+        mean_rank = sum(values["ranks"]) / len(values["ranks"])
+        candidates.append(
+            {
+                "learning_rate": learning_rate,
+                "mean_normalized_validation_objective_regret": mean_regret,
+                "mean_within_group_rank": mean_rank,
+                "group_normalized_regrets": values["normalized_regrets"],
+                "group_ranks": values["ranks"],
+            }
+        )
+    candidates.sort(
+        key=lambda row: (
+            row["mean_normalized_validation_objective_regret"],
+            row["mean_within_group_rank"],
+            row["learning_rate"],
+        )
+    )
+    return {
+        "status": "complete",
+        "training_seed": 0,
+        "split_seed": 0,
+        "additional_seed_confirmation": False,
+        "selection_uses_calibration": False,
+        "selection_uses_heldout": False,
+        "selection_uses_empirical_B": False,
+        "selected_learning_rate": candidates[0]["learning_rate"],
+        "criterion": "minimum mean normalized validation-objective regret",
+        "tiebreakers": ["minimum mean rank", "smaller learning rate"],
+        "candidates": candidates,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
@@ -188,6 +251,11 @@ def main() -> None:
     (args.output_root / "RESULTS_VALIDATION.json").write_text(
         json.dumps(rows, ensure_ascii=False, indent=2) + "\n"
     )
+    selection = select_shared_learning_rate(rows) if len(rows) == expected else None
+    if selection is not None:
+        (args.output_root / "LR_SELECTION.json").write_text(
+            json.dumps(selection, ensure_ascii=False, indent=2) + "\n"
+        )
     (args.output_root / "AUDIT.json").write_text(
         json.dumps(
             {
@@ -198,6 +266,8 @@ def main() -> None:
                 "selection_uses_calibration": False,
                 "selection_uses_heldout": False,
                 "selection_uses_empirical_B": False,
+                "fixed_training_seed": 0,
+                "additional_seed_confirmation": False,
             },
             ensure_ascii=False,
             indent=2,

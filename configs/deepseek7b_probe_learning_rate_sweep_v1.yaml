@@ -52,10 +52,15 @@ selection_plan:
   coarse_screen:
     use_only_internal_validation: true
     compare_equal_optimizer_step_budgets: true
-  confirmation:
-    top_k_learning_rates: 2
-    deterministic_training_seeds: [0, 1, 2]
-    keep_split_seed_fixed: true
+  final_selection:
+    training_seed: 0
+    split_seed: 0
+    rerun_additional_seeds: false
+    choose_one_shared_learning_rate: true
+    grouping_axes: [grader, dataset, method]
+    primary_criterion: minimum_mean_normalized_validation_objective_regret
+    first_tiebreaker: minimum_mean_within_group_rank
+    final_tiebreaker: smaller_learning_rate
   deployment_after_freeze:
     calibrator: trajectory_envelope_ltt
     alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
@@ -67,3 +72,4 @@ prohibited_selection_inputs:
   - calibration_token_reduction
   - heldout_accuracy
   - heldout_token_reduction
+  - best_of_multiple_training_seeds
