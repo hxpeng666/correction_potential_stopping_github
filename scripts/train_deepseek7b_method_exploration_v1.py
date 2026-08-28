@@ -499,9 +499,26 @@ def main() -> None:
     parser.add_argument("--patience", type=int)
     parser.add_argument("--batch-problems", type=int)
     parser.add_argument(
+        "--learning-rate",
+        type=float,
+        help="AdamW learning-rate override recorded in the experiment fingerprint.",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        help="AdamW weight-decay override recorded in the experiment fingerprint.",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Question-level fit/validation split seed, separate from training seed.",
+    )
+    parser.add_argument(
         "--selection-rule",
         choices=("legacy_b0_token", "label_ap", "validation_objective"),
-        default="legacy_b0_token",
+        default="validation_objective",
         help=(
             "Internal probe-checkpoint selection. label_ap and "
             "validation_objective are threshold-free; legacy_b0_token is "
@@ -523,7 +540,7 @@ def main() -> None:
     output_lock = acquire_output_lock(args.output)
 
     config = load_yaml(args.config)
-    reproducibility = strict_reproducibility(seed=0, num_threads=1)
+    reproducibility = strict_reproducibility(seed=args.seed, num_threads=1)
     if args.gpu >= 0:
         torch.cuda.set_device(args.gpu)
         device = torch.device(f"cuda:{args.gpu}")
@@ -585,6 +602,18 @@ def main() -> None:
         "lambda_separation": args.lambda_separation,
         "gamma": args.gamma,
         "selection_rule": args.selection_rule,
+        "training_seed": args.seed,
+        "split_seed": args.split_seed,
+        "learning_rate": (
+            float(args.learning_rate)
+            if args.learning_rate is not None
+            else float(config["probe"]["learning_rate"])
+        ),
+        "weight_decay": (
+            float(args.weight_decay)
+            if args.weight_decay is not None
+            else float(config["probe"]["weight_decay"])
+        ),
         "screen_only": args.screen_only,
         "reproducibility_protocol": reproducibility,
         "runtime_lock": runtime_lock_audit,
@@ -635,10 +664,10 @@ def main() -> None:
     frame = train["frame"]
     fallback_ids = [row["problem_id"] for row in train["fallbacks"]]
     fit_ids, validation_ids = fit_validation_problem_ids(
-        frame, args.dataset, seed=0, additional_problem_ids=fallback_ids
+        frame, args.dataset, seed=args.split_seed, additional_problem_ids=fallback_ids
     )
     fit_mask, validation_mask = fit_validation_masks(
-        frame, args.dataset, seed=0, additional_problem_ids=fallback_ids
+        frame, args.dataset, seed=args.split_seed, additional_problem_ids=fallback_ids
     )
     validation_fallbacks = [
         row for row in train["fallbacks"] if row["problem_id"] in validation_ids
@@ -651,7 +680,7 @@ def main() -> None:
         feature_kind=args.feature_kind,
         pca_dim=args.pca_dim,
         pca_fit_max_rows=args.pca_fit_max_rows,
-        seed=0,
+        seed=args.split_seed,
     )
     target = ((~frame.current_success.astype(bool)) & frame.dense_success.astype(bool)).to_numpy(np.float32)
     current_success = frame.current_success.to_numpy(np.float32)
@@ -682,15 +711,23 @@ def main() -> None:
     probe_config = config["probe"]
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=float(probe_config["learning_rate"]),
-        weight_decay=float(probe_config["weight_decay"]),
+        lr=(
+            float(args.learning_rate)
+            if args.learning_rate is not None
+            else float(probe_config["learning_rate"])
+        ),
+        weight_decay=(
+            float(args.weight_decay)
+            if args.weight_decay is not None
+            else float(probe_config["weight_decay"])
+        ),
         foreach=False,
         fused=False,
     )
     epochs = int(args.epochs or probe_config["max_epochs"])
     patience_limit = int(args.patience or probe_config["patience"])
     batch_problems = int(args.batch_problems or probe_config["trajectory_batch_size"])
-    rng = random.Random(0)
+    rng = random.Random(args.seed)
     best = None
     patience = 0
     history = []
@@ -847,6 +884,18 @@ def main() -> None:
     else:
         internal_curve = []
         internal_results = {}
+    internal_validation = {
+        "label_ap": safe_ap_auc(target[validation_mask], internal_scores)[0],
+        "label_auc": safe_ap_auc(target[validation_mask], internal_scores)[1],
+        "deployment_calibration": "not_performed_on_internal_validation",
+    }
+    if args.selection_rule == "legacy_b0_token":
+        internal_validation.update(
+            {
+                "legacy_empirical_B_diagnostic": internal_results,
+                "legacy_policy_curve_diagnostic": internal_curve,
+            }
+        )
     payload: dict[str, Any] = {
         "status": "complete",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -874,13 +923,7 @@ def main() -> None:
             "calibration_split_used_for_model_selection": False,
         },
         "history": history,
-        "internal_validation": {
-            "label_ap": safe_ap_auc(target[validation_mask], internal_scores)[0],
-            "label_auc": safe_ap_auc(target[validation_mask], internal_scores)[1],
-            "legacy_empirical_B_diagnostic": internal_results,
-            "legacy_policy_curve_diagnostic": internal_curve,
-            "deployment_calibration": "not_performed_on_internal_validation",
-        },
+        "internal_validation": internal_validation,
         "screen_only": bool(args.screen_only),
         "reproducibility": {
             "settings": reproducibility,

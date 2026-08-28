@@ -1,0 +1,53 @@
+protocol_id: cps_deepseek7b_probe_learning_rate_sweep_v1
+status: primary_training_hyperparameter_selection
+base_config: configs/deepseek7b_deterministic_grader_pair_v2.yaml
+
+scientific_scope:
+  datasets: [gsm8k, math]
+  methods:
+    bce:
+      point_loss: checkpoint_proper
+      trajectory_aggregation: none
+      lambda_protect: 0.0
+    bce_trajectory:
+      point_loss: checkpoint_proper
+      trajectory_aggregation: normalized_softmin
+      beta: 0.5
+      lambda_protect: 1.0
+  learning_rates: [0.000025, 0.00005, 0.0001, 0.0002, 0.0004]
+
+controls:
+  optimizer: AdamW
+  weight_decay: 0.001
+  batch_unit: complete_problem_trajectory
+  trajectory_batch_size: 24
+  maximum_epochs: 48
+  early_stopping_patience: 48
+  training_seed: 0
+  split_seed: 0
+  internal_fit_fraction: 0.8
+  model_selection: minimum_validation_objective
+  secondary_diagnostics: [checkpoint_average_precision, checkpoint_auc]
+  calibration_during_sweep: none
+  heldout_access_during_sweep: forbidden
+  formal_hardware_class: NVIDIA_A100_80GB_PCIe
+
+selection_plan:
+  coarse_screen:
+    use_only_internal_validation: true
+    compare_equal_optimizer_step_budgets: true
+  confirmation:
+    top_k_learning_rates: 2
+    deterministic_training_seeds: [0, 1, 2]
+    keep_split_seed_fixed: true
+  deployment_after_freeze:
+    calibrator: trajectory_envelope_ltt
+    alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
+    delta: 0.05
+    objective: token_reduction_reasoning_only
+
+prohibited_selection_inputs:
+  - empirical_budget_B
+  - calibration_token_reduction
+  - heldout_accuracy
+  - heldout_token_reduction
