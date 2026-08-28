@@ -29,6 +29,25 @@ not yet have a dedicated runner must be launched through
 - AdamW fused/foreach kernels disabled;
 - one probe-training process per GPU.
 
+## Runtime lock (required for formal v2 runs)
+
+Recording an environment is not sufficient: a later run could record a changed
+environment and still look superficially valid.  Formal v2 runners therefore
+require `reproducibility.runtime_lock` in their configuration and compare the
+live process against that committed JSON lock before loading training data.
+
+The lock fixes the complete Python build string, OS/glibc identity,
+scientific package versions, CUDA runtime, cuDNN, NVIDIA driver, GPU model,
+memory size and compute capability.  GPU UUID is an explicit allow-list of
+devices that have passed the bitwise cross-device gate.  Any mismatch aborts the
+run.  Updating a driver or package requires a new lock, Git commit, output name,
+and reproducibility certification; it cannot silently reuse an older result.
+
+Bitwise reproducibility is certified only inside the committed runtime lock.
+No PyTorch program can promise identical floating-point bits across arbitrary
+future hardware and library versions.  Outside the lock the correct behavior is
+therefore refusal, not a tolerance-based claim.
+
 ## Required reproducibility gate
 
 Before comparing two graders or two label definitions, train an invariant

@@ -51,6 +51,7 @@ from src.legacy_empirical_probe_normalized_v1 import (
 )
 from src.reproducibility import (
     code_provenance,
+    enforce_runtime_lock,
     environment_provenance,
     sha256_array,
     sha256_json,
@@ -471,6 +472,19 @@ def main() -> None:
 
     config = load_yaml(args.config)
     reproducibility = strict_reproducibility(seed=0, num_threads=1)
+    if args.gpu >= 0:
+        torch.cuda.set_device(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
+    else:
+        device = torch.device("cpu")
+    runtime_identity = environment_provenance(device)
+    runtime_lock_value = config.get("reproducibility", {}).get("runtime_lock")
+    runtime_lock_audit = None
+    if runtime_lock_value is not None:
+        runtime_lock_path = Path(runtime_lock_value)
+        if not runtime_lock_path.is_absolute():
+            runtime_lock_path = ROOT / runtime_lock_path
+        runtime_lock_audit = enforce_runtime_lock(runtime_lock_path, runtime_identity)
     code_identity = code_provenance(
         ROOT,
         (
@@ -514,6 +528,7 @@ def main() -> None:
         "gamma": args.gamma,
         "screen_only": args.screen_only,
         "reproducibility_protocol": reproducibility,
+        "runtime_lock": runtime_lock_audit,
         "code_identity": code_identity,
     }
     # Preserve the v1 fingerprint for variants that use only the original cache;
@@ -548,15 +563,6 @@ def main() -> None:
         raise RuntimeError(f"refusing to overwrite output: {args.output}")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    if args.gpu >= 0:
-        torch.cuda.set_device(args.gpu)
-        device = torch.device(f"cuda:{args.gpu}")
-    else:
-        # The probe is tiny relative to the frozen LLM.  CPU screening allows
-        # the GPU feature collectors to remain saturated without serializing
-        # otherwise independent ablation axes.
-        device = torch.device("cpu")
-    runtime_identity = environment_provenance(device)
     train = load_split(
         args.raw_root,
         "probe_train",
@@ -769,6 +775,7 @@ def main() -> None:
             "settings": reproducibility,
             "code": code_identity,
             "environment": runtime_identity,
+            "runtime_lock": runtime_lock_audit,
             "input": input_identity,
             "initial_state_sha256": initial_state_sha256,
             "final_state_sha256": final_state_sha256,

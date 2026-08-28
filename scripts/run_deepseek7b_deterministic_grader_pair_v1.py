@@ -16,10 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.reproducibility import code_provenance, deterministic_subprocess_environment
+from src.reproducibility import (
+    code_provenance,
+    deterministic_subprocess_environment,
+    sha256_file,
+)
 
 
 METHODS = (
@@ -91,6 +97,16 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--gpu", type=int, default=1)
     args = parser.parse_args()
+    config_path = args.config.resolve()
+    config_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    runtime_lock_value = config_payload.get("reproducibility", {}).get("runtime_lock")
+    if not runtime_lock_value:
+        raise RuntimeError("formal paired runner requires reproducibility.runtime_lock")
+    runtime_lock_path = Path(runtime_lock_value)
+    if not runtime_lock_path.is_absolute():
+        runtime_lock_path = ROOT / runtime_lock_path
+    if not runtime_lock_path.is_file():
+        raise FileNotFoundError(runtime_lock_path)
     environment = deterministic_subprocess_environment(seed=0)
     code_identity = code_provenance(
         ROOT,
@@ -114,7 +130,12 @@ def main() -> None:
         "status": "negative_control",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "code_identity": code_identity,
-        "config": str(args.config.resolve()),
+        "config": str(config_path),
+        "config_sha256": sha256_file(config_path),
+        "runtime_lock": {
+            "path": str(runtime_lock_path.resolve()),
+            "sha256": sha256_file(runtime_lock_path),
+        },
         "conditions": {key: str(value) for key, value in conditions.items()},
         "gpu": args.gpu,
         "execution": "single process per GPU; strict deterministic algorithms",

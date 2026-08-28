@@ -1,0 +1,29 @@
+{
+  "lock_id": "cps_a100_pcie_torch271_cuda126_v1",
+  "python": "3.12.12 | packaged by conda-forge | (main, Jan 26 2026, 23:51:32) [GCC 14.3.0]",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "packages": {
+    "numpy": "2.2.6",
+    "pandas": "3.0.1",
+    "scikit-learn": "1.8.0",
+    "scipy": "1.17.1",
+    "torch": "2.7.1",
+    "PyYAML": "6.0.3",
+    "transformers": "4.57.3",
+    "huggingface-hub": "0.36.2",
+    "safetensors": "0.7.0",
+    "tokenizers": "0.22.2"
+  },
+  "cuda_runtime": "12.6",
+  "cudnn": 90501,
+  "gpu": {
+    "name": "NVIDIA A100 80GB PCIe",
+    "total_memory": 84974239744,
+    "compute_capability": [8, 0],
+    "driver": "550.120",
+    "allowed_uuids": [
+      "GPU-2ec7b9e8-518a-d891-671e-caee067c7c97",
+      "GPU-ae9a0a2d-b156-bac5-f0f9-785b23e87bff"
+    ]
+  }
+}

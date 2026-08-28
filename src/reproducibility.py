@@ -157,7 +157,18 @@ def strict_reproducibility(seed: int = 0, *, num_threads: int = 1) -> dict[str, 
 
 def environment_provenance(device: torch.device | None = None) -> dict[str, Any]:
     packages = {}
-    for name in ("numpy", "pandas", "scikit-learn", "torch", "PyYAML"):
+    for name in (
+        "numpy",
+        "pandas",
+        "scikit-learn",
+        "scipy",
+        "torch",
+        "PyYAML",
+        "transformers",
+        "huggingface-hub",
+        "safetensors",
+        "tokenizers",
+    ):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -194,6 +205,70 @@ def environment_provenance(device: torch.device | None = None) -> dict[str, Any]
         except (OSError, subprocess.CalledProcessError, IndexError, ValueError):
             result["gpu"].update({"uuid": None, "driver": None})
     return result
+
+
+def enforce_runtime_lock(
+    lock_path: str | Path,
+    observed: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless the scientific runtime exactly matches a lock file.
+
+    GPU UUIDs are represented as an allow-list so two separately certified,
+    otherwise identical A100s can be used.  Every other locked field must match
+    exactly.  A changed driver or package version therefore requires a new lock,
+    Git commit, and bitwise reproducibility gate rather than a silent rerun.
+    """
+    path = Path(lock_path).resolve()
+    expected = json.loads(path.read_text(encoding="utf-8"))
+    mismatches: dict[str, Any] = {}
+
+    for key in ("python", "platform", "cuda_runtime", "cudnn"):
+        if expected.get(key) != observed.get(key):
+            mismatches[key] = {
+                "expected": expected.get(key),
+                "observed": observed.get(key),
+            }
+
+    expected_packages = expected.get("packages", {})
+    observed_packages = observed.get("packages", {})
+    for name, version in expected_packages.items():
+        if observed_packages.get(name) != version:
+            mismatches[f"packages.{name}"] = {
+                "expected": version,
+                "observed": observed_packages.get(name),
+            }
+
+    expected_gpu = expected.get("gpu")
+    observed_gpu = observed.get("gpu")
+    if expected_gpu is not None:
+        if observed_gpu is None:
+            mismatches["gpu"] = {"expected": expected_gpu, "observed": None}
+        else:
+            exact_gpu_fields = ("name", "total_memory", "compute_capability", "driver")
+            for key in exact_gpu_fields:
+                if expected_gpu.get(key) != observed_gpu.get(key):
+                    mismatches[f"gpu.{key}"] = {
+                        "expected": expected_gpu.get(key),
+                        "observed": observed_gpu.get(key),
+                    }
+            allowed_uuids = expected_gpu.get("allowed_uuids", [])
+            if observed_gpu.get("uuid") not in allowed_uuids:
+                mismatches["gpu.uuid"] = {
+                    "expected_one_of": allowed_uuids,
+                    "observed": observed_gpu.get("uuid"),
+                }
+
+    if mismatches:
+        raise RuntimeError(
+            "runtime does not match the committed reproducibility lock: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    return {
+        "status": "matched",
+        "lock_id": expected.get("lock_id"),
+        "path": str(path),
+        "sha256": sha256_file(path),
+    }
 
 
 def deterministic_subprocess_environment(seed: int = 0) -> dict[str, str]:

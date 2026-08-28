@@ -9,6 +9,7 @@ import torch
 from src.reproducibility import (
     REQUIRED_ENVIRONMENT,
     deterministic_subprocess_environment,
+    enforce_runtime_lock,
     git_provenance,
     sha256_array,
     sha256_state_dict,
@@ -53,3 +54,41 @@ def test_dirty_git_worktree_is_rejected(tmp_path) -> None:
     tracked.write_text("changed\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="clean Git worktree"):
         git_provenance(tmp_path, require_clean=True)
+
+
+def test_runtime_lock_matches_only_certified_environment(tmp_path) -> None:
+    observed = {
+        "python": "3.12.12",
+        "executable": "/env/bin/python",
+        "platform": "linux",
+        "packages": {"torch": "2.7.1", "numpy": "2.2.6"},
+        "cuda_runtime": "12.6",
+        "cudnn": 90501,
+        "gpu": {
+            "name": "NVIDIA A100 80GB PCIe",
+            "total_memory": 84974239744,
+            "compute_capability": [8, 0],
+            "uuid": "GPU-certified-1",
+            "driver": "550.120",
+        },
+    }
+    lock = {
+        "lock_id": "test-lock",
+        **{key: observed[key] for key in (
+            "python", "platform", "packages",
+            "cuda_runtime", "cudnn",
+        )},
+        "gpu": {
+            **{key: observed["gpu"][key] for key in (
+                "name", "total_memory", "compute_capability", "driver",
+            )},
+            "allowed_uuids": ["GPU-certified-0", "GPU-certified-1"],
+        },
+    }
+    path = tmp_path / "runtime.json"
+    path.write_text(__import__("json").dumps(lock), encoding="utf-8")
+    assert enforce_runtime_lock(path, observed)["status"] == "matched"
+
+    changed = {**observed, "packages": {**observed["packages"], "torch": "2.8.0"}}
+    with pytest.raises(RuntimeError, match="runtime does not match"):
+        enforce_runtime_lock(path, changed)

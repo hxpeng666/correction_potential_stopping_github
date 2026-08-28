@@ -11,10 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.reproducibility import code_provenance, deterministic_subprocess_environment
+from src.reproducibility import (
+    code_provenance,
+    deterministic_subprocess_environment,
+    sha256_file,
+)
 
 
 ALPHAS = (0.005, 0.01, 0.02, 0.03, 0.05, 0.10)
@@ -83,6 +89,15 @@ def main() -> None:
     parser.add_argument("--gpu", type=int, default=0)
     args = parser.parse_args()
     config = args.config.resolve()
+    config_payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+    runtime_lock_value = config_payload.get("reproducibility", {}).get("runtime_lock")
+    if not runtime_lock_value:
+        raise RuntimeError("formal method-axes runner requires reproducibility.runtime_lock")
+    runtime_lock_path = Path(runtime_lock_value)
+    if not runtime_lock_path.is_absolute():
+        runtime_lock_path = ROOT / runtime_lock_path
+    if not runtime_lock_path.is_file():
+        raise FileNotFoundError(runtime_lock_path)
     data_root = args.data_root.resolve()
     aux_root = args.aux_root.resolve()
     output = args.output_root.resolve()
@@ -109,6 +124,11 @@ def main() -> None:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "code_identity": identity,
         "config": str(config),
+        "config_sha256": sha256_file(config),
+        "runtime_lock": {
+            "path": str(runtime_lock_path.resolve()),
+            "sha256": sha256_file(runtime_lock_path),
+        },
         "data_root": str(data_root),
         "aux_root": str(aux_root),
         "output_root": str(output),

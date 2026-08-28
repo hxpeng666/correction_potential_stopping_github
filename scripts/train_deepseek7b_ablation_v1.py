@@ -42,6 +42,7 @@ from src.legacy_empirical_probe_normalized_v1 import (
 from src.final_paper_protocol import canonical_fingerprint
 from src.reproducibility import (
     code_provenance,
+    enforce_runtime_lock,
     environment_provenance,
     sha256_array,
     sha256_json,
@@ -237,6 +238,16 @@ def main() -> None:
         raise ValueError("controlled target baselines use checkpoint BCE only")
     config = load_yaml(args.config)
     reproducibility = strict_reproducibility(seed=0, num_threads=1)
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f"cuda:{args.gpu}")
+    runtime_identity = environment_provenance(device)
+    runtime_lock_value = config.get("reproducibility", {}).get("runtime_lock")
+    runtime_lock_audit = None
+    if runtime_lock_value is not None:
+        runtime_lock_path = Path(runtime_lock_value)
+        if not runtime_lock_path.is_absolute():
+            runtime_lock_path = ROOT / runtime_lock_path
+        runtime_lock_audit = enforce_runtime_lock(runtime_lock_path, runtime_identity)
     code_identity = code_provenance(
         ROOT,
         (
@@ -278,6 +289,7 @@ def main() -> None:
         "probe_config": config["probe"],
         "calibration_config": config["calibration"],
         "reproducibility_protocol": reproducibility,
+        "runtime_lock": runtime_lock_audit,
         "code_identity": code_identity,
     }
     invocation_fingerprint = canonical_fingerprint(invocation_spec)
@@ -295,9 +307,6 @@ def main() -> None:
     if destination.exists() and any(destination.iterdir()):
         raise RuntimeError(f"拒绝覆盖既有 probe 输出；请使用新的目录或同指纹 --resume：{destination}")
     destination.mkdir(parents=True, exist_ok=True)
-    torch.cuda.set_device(args.gpu)
-    device = torch.device(f"cuda:{args.gpu}")
-    runtime_identity = environment_provenance(device)
 
     frames: dict[str, Any] = {}
     features: dict[str, np.ndarray] = {}
@@ -673,6 +682,7 @@ def main() -> None:
             "settings": reproducibility,
             "code": code_identity,
             "environment": runtime_identity,
+            "runtime_lock": runtime_lock_audit,
             "input": input_identity,
             "initial_state_sha256": initial_state_sha256,
             "final_state_sha256": final_state_sha256,
@@ -715,6 +725,7 @@ def main() -> None:
                 "code": code_identity,
                 "settings": reproducibility,
                 "environment": runtime_identity,
+                "runtime_lock": runtime_lock_audit,
                 "input": input_identity,
                 "initial_state_sha256": initial_state_sha256,
                 "final_state_sha256": final_state_sha256,
