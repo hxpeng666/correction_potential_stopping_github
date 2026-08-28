@@ -56,7 +56,8 @@ Future formal v2 runs also require the committed runtime lock.  Changed code,
 input hashes, package versions, CUDA/cuDNN, driver, or uncertified GPU UUIDs cause
 an immediate refusal instead of a silent rerun.
 
-The full v2 training entry point was then run once on each A100 from commit
+The full v2 training entry point was then exercised in an independent one-epoch
+certification run on each A100 from commit
 `91adb3cbd0e1119711ba14e384cd2f591e3a0ec9`.  The independent audit
 `results/deepseek7b_runtime_lock_cert_v2/BITWISE_AUDIT.json` reports
 `all_exact=true`: input identity, initial state, complete training history, best
