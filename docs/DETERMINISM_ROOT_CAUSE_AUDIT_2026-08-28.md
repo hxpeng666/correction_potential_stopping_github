@@ -67,6 +67,18 @@ not expected to have the same byte hash because they include run-specific
 provenance metadata; the numerical model state and decision scores are compared
 separately and are bitwise exact.
 
+The stochastic Dense collector was also moved behind the same fail-closed
+runtime lock.  It retains the configured sampling distribution but derives a
+dedicated RNG seed from `(global_seed, problem_id)`, making worker count and
+execution order irrelevant.  At commit
+`efaeb5934bfe990429c251f6dbb1133be92027dc`, the real held-out sample
+`gsm8k_test_00059` was collected independently on both certified A100s.  The
+collection audit reports identical Dense and forced-answer token IDs, entropy
+values, checkpoint positions, labels and hidden-state tensors; the scientific
+payload SHA-256 is identical and the maximum hidden-state difference is zero.
+Only operational fields such as wall time, timestamp, worker and GPU identity
+are excluded from equality.
+
 ## Reporting consequence
 
 The historical grader-comparison table and any table that mixes the historical
