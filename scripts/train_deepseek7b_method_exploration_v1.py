@@ -128,7 +128,7 @@ def model_selection_key(
     validation_ap: float,
     validation_auc: float,
     validation_objective: float,
-    validation_b0_token_reduction: float,
+    validation_b0_token_reduction: float | None,
 ) -> tuple[float, ...]:
     """Return a maximization key for internal model-checkpoint selection.
 
@@ -140,6 +140,8 @@ def model_selection_key(
     the independent calibration split.
     """
     if rule == "legacy_b0_token":
+        if validation_b0_token_reduction is None:
+            raise ValueError("legacy selection requires a B=0 policy replay")
         return (
             validation_b0_token_reduction,
             validation_ap,
@@ -773,14 +775,16 @@ def main() -> None:
         validation_truth = target[validation_mask]
         ap, auc = safe_ap_auc(validation_truth, validation_scores)
         validation_frame = frame.loc[validation_mask].reset_index(drop=True)
-        curve = policy_curve(
-            validation_frame,
-            validation_scores,
-            grid_size=101,
-            readout_suffix_tokens=readout_suffix_tokens,
-            fallbacks=validation_fallbacks,
-        )
-        strict = choose_empirical_budget(curve, 0, 0.01)
+        strict = None
+        if args.selection_rule == "legacy_b0_token":
+            curve = policy_curve(
+                validation_frame,
+                validation_scores,
+                grid_size=101,
+                readout_suffix_tokens=readout_suffix_tokens,
+                fallbacks=validation_fallbacks,
+            )
+            strict = choose_empirical_budget(curve, 0, 0.01)
         record = {
             "epoch": epoch,
             "loss": float(np.mean(totals)),
@@ -795,8 +799,9 @@ def main() -> None:
             "validation_point_loss": validation_point_loss,
             "validation_protect_loss": validation_protect_loss,
             "validation_separation_loss": validation_separation_loss,
-            "validation_B0": strict,
         }
+        if strict is not None:
+            record["legacy_validation_B0_diagnostic"] = strict
         history.append(record)
         print(json.dumps(record), flush=True)
         key = model_selection_key(
@@ -804,8 +809,10 @@ def main() -> None:
             validation_ap=ap,
             validation_auc=auc,
             validation_objective=validation_objective,
-            validation_b0_token_reduction=float(
-                strict["deployed_token_reduction"]
+            validation_b0_token_reduction=(
+                float(strict["deployed_token_reduction"])
+                if strict is not None
+                else None
             ),
         )
         if best is None or key > best[0]:
@@ -825,17 +832,21 @@ def main() -> None:
     train_scores = predict_scores(model, train_features, device)
     final_state_sha256 = sha256_state_dict(best[2])
     internal_scores = train_scores[validation_mask]
-    internal_curve = policy_curve(
-        frame.loc[validation_mask].reset_index(drop=True),
-        internal_scores,
-        grid_size=101,
-        readout_suffix_tokens=readout_suffix_tokens,
-        fallbacks=validation_fallbacks,
-    )
-    internal_results = {
-        str(budget): choose_empirical_budget(internal_curve, budget, 0.01)
-        for budget in (0, 1, 2, 4, 10)
-    }
+    if args.selection_rule == "legacy_b0_token":
+        internal_curve = policy_curve(
+            frame.loc[validation_mask].reset_index(drop=True),
+            internal_scores,
+            grid_size=101,
+            readout_suffix_tokens=readout_suffix_tokens,
+            fallbacks=validation_fallbacks,
+        )
+        internal_results = {
+            str(budget): choose_empirical_budget(internal_curve, budget, 0.01)
+            for budget in (0, 1, 2, 4, 10)
+        }
+    else:
+        internal_curve = []
+        internal_results = {}
     payload: dict[str, Any] = {
         "status": "complete",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -866,8 +877,9 @@ def main() -> None:
         "internal_validation": {
             "label_ap": safe_ap_auc(target[validation_mask], internal_scores)[0],
             "label_auc": safe_ap_auc(target[validation_mask], internal_scores)[1],
-            "empirical_B": internal_results,
-            "curve": internal_curve,
+            "legacy_empirical_B_diagnostic": internal_results,
+            "legacy_policy_curve_diagnostic": internal_curve,
+            "deployment_calibration": "not_performed_on_internal_validation",
         },
         "screen_only": bool(args.screen_only),
         "reproducibility": {

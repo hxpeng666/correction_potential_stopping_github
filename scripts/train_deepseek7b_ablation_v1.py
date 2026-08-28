@@ -546,7 +546,10 @@ def main() -> None:
             validation_truth, validation_scores
         )
         validation_frame = train_frame.loc[validation_mask].reset_index(drop=True)
-        if args.method == "correction":
+        if (
+            args.method == "correction"
+            and args.selection_rule == "legacy_b0_token"
+        ):
             internal_grid = [
                 (
                     float(value),
@@ -596,8 +599,9 @@ def main() -> None:
             "trajectory_loss": float(np.mean(trajectory_losses)),
             "validation_ap": validation_ap,
             "validation_auc": validation_auc,
-            "validation_strict_replay": strict,
         }
+        if strict is not None:
+            record["legacy_validation_B0_diagnostic"] = strict
         history.append(record)
         print(json.dumps({"method": args.method, **record}), flush=True)
         if best is None or key > best[0]:

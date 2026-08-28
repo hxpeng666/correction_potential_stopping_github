@@ -40,3 +40,13 @@ def test_validation_objective_is_minimized() -> None:
     ) > model_selection_key(
         "validation_objective", validation_objective=0.3, **common
     )
+
+
+def test_threshold_free_selection_accepts_no_b0_replay() -> None:
+    assert model_selection_key(
+        "label_ap",
+        validation_ap=0.8,
+        validation_auc=0.9,
+        validation_objective=0.4,
+        validation_b0_token_reduction=None,
+    ) == (0.8, 0.9, -0.4)
