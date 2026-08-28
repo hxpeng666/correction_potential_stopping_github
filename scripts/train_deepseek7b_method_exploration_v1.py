@@ -527,6 +527,16 @@ def main() -> None:
     )
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--screen-only", action="store_true")
+    parser.add_argument(
+        "--deployment-calibration",
+        choices=("scores_only", "legacy_empirical_b"),
+        default="legacy_empirical_b",
+        help=(
+            "scores_only freezes calibration/heldout/OOD checkpoint scores without "
+            "selecting a threshold.  This is the formal input to an independent "
+            "trajectory-envelope LTT pass."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--allow-unlocked-legacy",
@@ -615,6 +625,7 @@ def main() -> None:
             else float(config["probe"]["weight_decay"])
         ),
         "screen_only": args.screen_only,
+        "deployment_calibration": args.deployment_calibration,
         "reproducibility_protocol": reproducibility,
         "runtime_lock": runtime_lock_audit,
         "code_identity": code_identity,
@@ -973,47 +984,55 @@ def main() -> None:
         heldout_features = transform_split(heldout, transform)
         calibration_scores = predict_scores(model, calibration_features, device)
         heldout_scores = predict_scores(model, heldout_features, device)
-        calibration_curve = policy_curve(
-            calibration["frame"],
-            calibration_scores,
-            grid_size=int(config["calibration"]["quantile_grid_size"]),
-            readout_suffix_tokens=readout_suffix_tokens,
-            fallbacks=calibration["fallbacks"],
-        )
-        budgets = [
-            int(value)
-            for value in config["calibration"]["empirical_lost_correct_budgets"]
-        ]
-        selected = {
-            str(budget): choose_empirical_budget(
-                calibration_curve,
-                budget,
-                float(config["dynamic_policy"]["accuracy_epsilon"]),
-            )
-            for budget in budgets
-        }
-        frozen_results = {}
+        selected = {}
         frozen_records = {}
-        for budget, choice in selected.items():
-            result = replay_policy(
-                heldout["frame"],
-                heldout_scores,
-                float(choice["threshold"]),
-                force_dense=bool(choice["is_no_stop_sentinel"]),
+        if args.deployment_calibration == "legacy_empirical_b":
+            calibration_curve = policy_curve(
+                calibration["frame"],
+                calibration_scores,
+                grid_size=int(config["calibration"]["quantile_grid_size"]),
                 readout_suffix_tokens=readout_suffix_tokens,
-                fallbacks=heldout["fallbacks"],
-                include_records=True,
+                fallbacks=calibration["fallbacks"],
             )
-            frozen_records[budget] = result.pop("records")
-            frozen_results[budget] = {
-                "calibration": choice,
-                "heldout": result,
+            budgets = [
+                int(value)
+                for value in config["calibration"]["empirical_lost_correct_budgets"]
+            ]
+            selected = {
+                str(budget): choose_empirical_budget(
+                    calibration_curve,
+                    budget,
+                    float(config["dynamic_policy"]["accuracy_epsilon"]),
+                )
+                for budget in budgets
             }
-        payload["calibration"] = {
-            "selection_objective": "token-only including one-step suffix prefill when used",
-            "curve": calibration_curve,
-            "empirical_B": selected,
-        }
+            frozen_results = {}
+            for budget, choice in selected.items():
+                result = replay_policy(
+                    heldout["frame"],
+                    heldout_scores,
+                    float(choice["threshold"]),
+                    force_dense=bool(choice["is_no_stop_sentinel"]),
+                    readout_suffix_tokens=readout_suffix_tokens,
+                    fallbacks=heldout["fallbacks"],
+                    include_records=True,
+                )
+                frozen_records[budget] = result.pop("records")
+                frozen_results[budget] = {
+                    "calibration": choice,
+                    "heldout": result,
+                }
+            payload["calibration"] = {
+                "selection_objective": "token-only including one-step suffix prefill when used",
+                "curve": calibration_curve,
+                "empirical_B": selected,
+            }
+        else:
+            payload["calibration"] = {
+                "status": "scores_only",
+                "threshold_selected": False,
+                "next_stage": "trajectory_envelope_ltt",
+            }
         payload["heldout"] = {
             "label_ap": safe_ap_auc(
                 ((~heldout["frame"].current_success.astype(bool)) & heldout["frame"].dense_success.astype(bool)).to_numpy(np.float32),
@@ -1023,8 +1042,9 @@ def main() -> None:
                 ((~heldout["frame"].current_success.astype(bool)) & heldout["frame"].dense_success.astype(bool)).to_numpy(np.float32),
                 heldout_scores,
             )[1],
-            "empirical_B": frozen_results,
         }
+        if args.deployment_calibration == "legacy_empirical_b":
+            payload["heldout"]["empirical_B"] = frozen_results
         payload["auxiliary_audit"].update(
             {
                 "calibration": calibration["auxiliary_audit"],
@@ -1063,36 +1083,38 @@ def main() -> None:
             )
             ood_features = transform_split(ood, transform)
             ood_scores = predict_scores(model, ood_features, device)
-            ood_results = {}
-            for budget, choice in selected.items():
-                result = replay_policy(
-                    ood["frame"],
-                    ood_scores,
-                    float(choice["threshold"]),
-                    force_dense=bool(choice["is_no_stop_sentinel"]),
-                    readout_suffix_tokens=readout_suffix_tokens,
-                    fallbacks=ood["fallbacks"],
-                    include_records=True,
-                )
-                ood_records[budget] = result.pop("records")
-                ood_results[budget] = result
             payload["ood"] = {
-                "mode": "frozen MATH probe and calibration threshold; no retraining/recalibration",
-                "empirical_B": ood_results,
+                "mode": "frozen MATH probe scores; no retraining or OOD recalibration",
             }
+            if args.deployment_calibration == "legacy_empirical_b":
+                ood_results = {}
+                for budget, choice in selected.items():
+                    result = replay_policy(
+                        ood["frame"],
+                        ood_scores,
+                        float(choice["threshold"]),
+                        force_dense=bool(choice["is_no_stop_sentinel"]),
+                        readout_suffix_tokens=readout_suffix_tokens,
+                        fallbacks=ood["fallbacks"],
+                        include_records=True,
+                    )
+                    ood_records[budget] = result.pop("records")
+                    ood_results[budget] = result
+                payload["ood"]["empirical_B"] = ood_results
             payload["auxiliary_audit"]["ood"] = ood["auxiliary_audit"]
             saved_scores["ood"] = torch.from_numpy(ood_scores.astype(np.float32))
             saved_keys["ood"] = {
                 "problem_ids": ood["frame"].problem_id.astype(str).tolist(),
                 "checkpoints": ood["frame"].checkpoint.astype(int).tolist(),
             }
-        atomic_torch_save(
-            {
-                "status": "complete",
-                "records": {"heldout": frozen_records, "ood": ood_records},
-            },
-            args.output / "policy_records.pt",
-        )
+        if args.deployment_calibration == "legacy_empirical_b":
+            atomic_torch_save(
+                {
+                    "status": "complete",
+                    "records": {"heldout": frozen_records, "ood": ood_records},
+                },
+                args.output / "policy_records.pt",
+            )
 
     atomic_torch_save(
         {
