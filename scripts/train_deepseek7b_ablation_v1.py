@@ -40,7 +40,15 @@ from src.legacy_empirical_probe_normalized_v1 import (
     threshold_grid,
 )
 from src.final_paper_protocol import canonical_fingerprint
-from src.utils import atomic_json, load_yaml, seed_everything
+from src.reproducibility import (
+    code_provenance,
+    environment_provenance,
+    sha256_array,
+    sha256_json,
+    sha256_state_dict,
+    strict_reproducibility,
+)
+from src.utils import atomic_json, load_yaml
 from deepseek7b_protocol_v1 import success as answer_equivalent
 
 
@@ -214,7 +222,7 @@ def main() -> None:
     parser.add_argument(
         "--trajectory-aggregation",
         choices=("unnormalized_softmin", "normalized_softmin"),
-        default="normalized_softmin",
+        default="unnormalized_softmin",
     )
     parser.add_argument("--trajectory-beta", type=float)
     parser.add_argument("--trajectory-weight", type=float, default=1.0)
@@ -228,6 +236,18 @@ def main() -> None:
     if args.method != "correction" and args.loss != "bce":
         raise ValueError("controlled target baselines use checkpoint BCE only")
     config = load_yaml(args.config)
+    reproducibility = strict_reproducibility(seed=0, num_threads=1)
+    code_identity = code_provenance(
+        ROOT,
+        (
+            "scripts/train_deepseek7b_ablation_v1.py",
+            "scripts/deepseek7b_protocol_v1.py",
+            "src/reproducibility.py",
+            "src/legacy_empirical_probe_normalized_v1.py",
+            "src/final_paper_inference.py",
+            "src/final_paper_protocol.py",
+        ),
+    )
     trajectory_beta = float(
         args.trajectory_beta
         if args.trajectory_beta is not None
@@ -257,6 +277,8 @@ def main() -> None:
         "heldout_input": artifact_manifest(args.heldout_root) if args.heldout_root else None,
         "probe_config": config["probe"],
         "calibration_config": config["calibration"],
+        "reproducibility_protocol": reproducibility,
+        "code_identity": code_identity,
     }
     invocation_fingerprint = canonical_fingerprint(invocation_spec)
     complete_path = destination / "phase.complete"
@@ -273,15 +295,9 @@ def main() -> None:
     if destination.exists() and any(destination.iterdir()):
         raise RuntimeError(f"拒绝覆盖既有 probe 输出；请使用新的目录或同指纹 --resume：{destination}")
     destination.mkdir(parents=True, exist_ok=True)
-    seed_everything(0)
-    if args.gpu >= 0:
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable; use --gpu -1 for the CPU contract test")
-        torch.cuda.set_device(args.gpu)
-        device = torch.device(f"cuda:{args.gpu}")
-    else:
-        device = torch.device("cpu")
-    torch.set_num_threads(min(16, torch.get_num_threads()))
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f"cuda:{args.gpu}")
+    runtime_identity = environment_provenance(device)
 
     frames: dict[str, Any] = {}
     features: dict[str, np.ndarray] = {}
@@ -289,7 +305,8 @@ def main() -> None:
     train_frame, train_hidden, capture_layers, train_fallbacks = load_checkpoint_split(
         args.raw_root / "probe_train", args.schedule
     )
-    train_frame = apply_semantic_answer_targets(train_frame)
+    if args.method in {"consistency", "last_switch"}:
+        train_frame = apply_semantic_answer_targets(train_frame)
     frames["probe_train"] = train_frame
     fallbacks["probe_train"] = train_fallbacks
     raw_train = build_dynamic_features(
@@ -327,7 +344,8 @@ def main() -> None:
         frame, hidden, layers, split_fallbacks = load_checkpoint_split(
             split_root / split, args.schedule
         )
-        frame = apply_semantic_answer_targets(frame)
+        if args.method in {"consistency", "last_switch"}:
+            frame = apply_semantic_answer_targets(frame)
         if layers != capture_layers:
             raise ValueError(f"capture layers differ for {split}: {layers}")
         raw = build_dynamic_features(
@@ -358,6 +376,21 @@ def main() -> None:
         for split, frame in frames.items()
     }
     train_labels = labels["probe_train"]
+    input_identity = {
+        split: {
+            "row_keys_sha256": sha256_json(
+                list(
+                    zip(
+                        frame.problem_id.astype(str).tolist(),
+                        frame.checkpoint.astype(int).tolist(),
+                    )
+                )
+            ),
+            "features_sha256": sha256_array(features[split]),
+            "labels_sha256": sha256_array(labels[split]),
+        }
+        for split, frame in frames.items()
+    }
     positives = float(train_labels[fit_mask].sum())
     negatives = float(fit_mask.sum()) - positives
     positive_weight = torch.tensor(
@@ -379,11 +412,14 @@ def main() -> None:
     if args.feature_kind == "full_no_delta" and width != 3590:
         raise ValueError(f"DeepSeek full_no_delta input width must be 3590, got {width}")
     model = FinalPaperProbe(width).to(device)
+    initial_state_sha256 = sha256_state_dict(model.state_dict())
     probe_config = config["probe"]
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(probe_config["learning_rate"]),
         weight_decay=float(probe_config["weight_decay"]),
+        foreach=False,
+        fused=False,
     )
     maximum_epochs = int(args.epochs or probe_config["max_epochs"])
     patience_limit = int(probe_config["patience"])
@@ -427,7 +463,7 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
-                model.parameters(), float(probe_config["gradient_clip"])
+                model.parameters(), float(probe_config["gradient_clip"]), foreach=False
             )
             optimizer.step()
             losses.append(float(loss.detach().cpu()))
@@ -518,6 +554,8 @@ def main() -> None:
         split: predict_scores(model, values, device)
         for split, values in features.items()
     }
+    final_state_sha256 = sha256_state_dict(best[2])
+    score_sha256 = {split: sha256_array(value) for split, value in scores.items()}
     calibration_config = config["calibration"]
     calibrated = calibrate_policies(
         frames["calibration"],
@@ -623,12 +661,23 @@ def main() -> None:
         "scaler_fit_scope": "probe_train_fit_only",
         "cost_protocol": "reasoning_tokens_only; short_answer_cost=0",
         "calibration_accuracy_epsilon": float(config["dynamic_policy"]["accuracy_epsilon"]),
+        "determinism_protocol_id": reproducibility["protocol_id"],
+        "git_commit": code_identity["git"]["commit"],
     }
     payload = {
         "status": "complete",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "run_spec": run_spec,
         "run_spec_fingerprint": canonical_fingerprint(run_spec),
+        "reproducibility": {
+            "settings": reproducibility,
+            "code": code_identity,
+            "environment": runtime_identity,
+            "input": input_identity,
+            "initial_state_sha256": initial_state_sha256,
+            "final_state_sha256": final_state_sha256,
+            "score_sha256": score_sha256,
+        },
         "input": artifact_manifest(args.raw_root),
         "heldout_input": artifact_manifest(args.heldout_root) if args.heldout_root else None,
         "split_counts": {
@@ -662,6 +711,15 @@ def main() -> None:
             "scaler_mean": torch.from_numpy(scaler.mean_.astype(np.float32)),
             "scaler_scale": torch.from_numpy(scaler.scale_.astype(np.float32)),
             "online_workpoints": online_workpoints,
+            "reproducibility": {
+                "code": code_identity,
+                "settings": reproducibility,
+                "environment": runtime_identity,
+                "input": input_identity,
+                "initial_state_sha256": initial_state_sha256,
+                "final_state_sha256": final_state_sha256,
+                "score_sha256": score_sha256,
+            },
         },
         destination / "probe.pt",
     )

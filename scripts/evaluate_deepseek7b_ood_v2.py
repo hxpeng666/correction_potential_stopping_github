@@ -26,7 +26,14 @@ from src.legacy_empirical_probe_normalized_v1 import (
     safe_ap_auc,
     target_values,
 )
-from src.utils import atomic_json, seed_everything
+from src.reproducibility import (
+    code_provenance,
+    environment_provenance,
+    sha256_array,
+    sha256_json,
+    strict_reproducibility,
+)
+from src.utils import atomic_json
 
 
 def sha256(path: Path) -> str:
@@ -46,6 +53,17 @@ def main() -> None:
     parser.add_argument("--gpu", type=int, required=True)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
+    reproducibility = strict_reproducibility(seed=0, num_threads=1)
+    project = Path(__file__).resolve().parents[1]
+    code_identity = code_provenance(
+        project,
+        (
+            "scripts/evaluate_deepseek7b_ood_v2.py",
+            "scripts/train_deepseek7b_ablation_v1.py",
+            "src/reproducibility.py",
+            "src/legacy_empirical_probe_normalized_v1.py",
+        ),
+    )
     source_json_path = args.source_probe / "probe.json"
     source_pt_path = args.source_probe / "probe.pt"
     source_marker_path = args.source_probe / "phase.complete"
@@ -62,6 +80,8 @@ def main() -> None:
         "heldout_root": str(args.heldout_root.resolve()),
         "heldout_input": heldout_manifest,
         "protocol": "same frozen MATH probe and calibration thresholds; OOD evaluation only",
+        "reproducibility_protocol": reproducibility,
+        "code_identity": code_identity,
     }
     invocation_fingerprint = canonical_fingerprint(invocation)
     marker_path = args.output / "phase.complete"
@@ -92,7 +112,8 @@ def main() -> None:
     frame, hidden, layers, fallbacks = load_checkpoint_split(
         args.heldout_root / "heldout", schedule
     )
-    frame = apply_semantic_answer_targets(frame)
+    if method in {"consistency", "last_switch"}:
+        frame = apply_semantic_answer_targets(frame)
     if list(source_model["capture_layers"]) != layers:
         raise ValueError("capture-layer mismatch between source probe and OOD cache")
     raw = build_dynamic_features(
@@ -115,14 +136,9 @@ def main() -> None:
         fallback["dense_wall_ms"] = float(fallback["dense_tokens"])
         fallback["adaptive_fallback_wall_ms"] = float(fallback["dense_tokens"])
 
-    seed_everything(0)
-    if args.gpu >= 0:
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable; use --gpu -1 for the CPU contract test")
-        torch.cuda.set_device(args.gpu)
-        device = torch.device(f"cuda:{args.gpu}")
-    else:
-        device = torch.device("cpu")
+    torch.cuda.set_device(args.gpu)
+    device = torch.device(f"cuda:{args.gpu}")
+    runtime_identity = environment_provenance(device)
     model = FinalPaperProbe(int(source_model["input_width"])).to(device)
     model.load_state_dict(source_model["state_dict"])
     scores = predict_scores(model, features, device)
@@ -163,6 +179,24 @@ def main() -> None:
         "calibration": source_report["calibration"],
         "frozen_policy_results": evaluated,
         "online_workpoints": source_report["online_workpoints"],
+        "reproducibility": {
+            "settings": reproducibility,
+            "code": code_identity,
+            "environment": runtime_identity,
+            "input": {
+                "row_keys_sha256": sha256_json(
+                    list(
+                        zip(
+                            frame.problem_id.astype(str).tolist(),
+                            frame.checkpoint.astype(int).tolist(),
+                        )
+                    )
+                ),
+                "features_sha256": sha256_array(features),
+                "labels_sha256": sha256_array(labels),
+            },
+            "scores_sha256": sha256_array(scores),
+        },
     }
     atomic_json(payload, args.output / "probe.json")
     atomic_torch_save(
