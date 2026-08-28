@@ -13,6 +13,7 @@ from typing import Any
 
 DATASETS = ("gsm8k", "math")
 METHODS = ("bce", "bce_trajectory")
+GRADERS = ("original_13k_parser", "forced_answer_at_cap")
 LEARNING_RATES = (0.000025, 0.00005, 0.0001, 0.0002, 0.0004)
 
 
@@ -44,91 +45,135 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     audit_errors: list[str] = []
     identities: dict[str, set[str]] = {dataset: set() for dataset in DATASETS}
-    inputs: dict[str, set[str]] = {dataset: set() for dataset in DATASETS}
+    features: dict[str, set[str]] = {dataset: set() for dataset in DATASETS}
+    row_keys: dict[str, set[str]] = {dataset: set() for dataset in DATASETS}
+    masks: dict[str, set[tuple[str, str]]] = {dataset: set() for dataset in DATASETS}
+    targets: dict[tuple[str, str], set[str]] = {
+        (dataset, grader): set() for dataset in DATASETS for grader in GRADERS
+    }
 
     for dataset in DATASETS:
-        for method in METHODS:
-            for learning_rate in LEARNING_RATES:
-                run_dir = (
-                    args.output_root
-                    / dataset
-                    / method
-                    / f"lr_{lr_tag(learning_rate)}"
-                    / "seed_0"
-                )
-                probe_path = run_dir / "probe.json"
-                marker_path = run_dir / "phase.complete"
-                if not probe_path.is_file() or not marker_path.is_file():
-                    audit_errors.append(f"missing complete run: {run_dir}")
-                    continue
-                payload = json.loads(probe_path.read_text())
-                if payload.get("status") != "complete":
-                    audit_errors.append(f"non-complete payload: {probe_path}")
-                    continue
-                invocation = payload["invocation"]
-                if invocation.get("selection_rule") != "validation_objective":
-                    audit_errors.append(f"wrong selection rule: {probe_path}")
-                actual_lr = float(invocation.get("learning_rate"))
-                if not math.isclose(actual_lr, learning_rate, rel_tol=0.0, abs_tol=1e-15):
-                    audit_errors.append(f"wrong learning rate: {probe_path}")
-                if payload.get("screen_only") is not True:
-                    audit_errors.append(f"heldout-capable run in screen: {probe_path}")
-                forbidden = forbidden_key_paths(payload)
-                if forbidden:
-                    audit_errors.append(
-                        f"legacy empirical calibration fields in {probe_path}: {forbidden}"
+        for grader in GRADERS:
+            for method in METHODS:
+                for learning_rate in LEARNING_RATES:
+                    run_dir = (
+                        args.output_root
+                        / grader
+                        / dataset
+                        / method
+                        / f"lr_{lr_tag(learning_rate)}"
+                        / "seed_0"
                     )
-                history = payload["history"]
-                if len(history) != 48:
-                    audit_errors.append(
-                        f"expected 48 epochs, got {len(history)}: {probe_path}"
+                    probe_path = run_dir / "probe.json"
+                    marker_path = run_dir / "phase.complete"
+                    if not probe_path.is_file() or not marker_path.is_file():
+                        audit_errors.append(f"missing complete run: {run_dir}")
+                        continue
+                    payload = json.loads(probe_path.read_text())
+                    if payload.get("status") != "complete":
+                        audit_errors.append(f"non-complete payload: {probe_path}")
+                        continue
+                    invocation = payload["invocation"]
+                    if invocation.get("selection_rule") != "validation_objective":
+                        audit_errors.append(f"wrong selection rule: {probe_path}")
+                    actual_lr = float(invocation.get("learning_rate"))
+                    if not math.isclose(
+                        actual_lr, learning_rate, rel_tol=0.0, abs_tol=1e-15
+                    ):
+                        audit_errors.append(f"wrong learning rate: {probe_path}")
+                    if payload.get("screen_only") is not True:
+                        audit_errors.append(f"heldout-capable run in screen: {probe_path}")
+                    forbidden = forbidden_key_paths(payload)
+                    if forbidden:
+                        audit_errors.append(
+                            f"legacy empirical calibration fields in {probe_path}: {forbidden}"
+                        )
+                    history = payload["history"]
+                    if len(history) != 48:
+                        audit_errors.append(
+                            f"expected 48 epochs, got {len(history)}: {probe_path}"
+                        )
+                    best_epoch = int(payload["best_epoch"])
+                    selected = next(
+                        row for row in history if int(row["epoch"]) == best_epoch
                     )
-                best_epoch = int(payload["best_epoch"])
-                selected = next(row for row in history if int(row["epoch"]) == best_epoch)
-                objective_min = min(float(row["validation_objective"]) for row in history)
-                if not math.isclose(
-                    float(selected["validation_objective"]),
-                    objective_min,
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
-                ):
-                    audit_errors.append(f"best epoch is not objective minimum: {probe_path}")
-                fit_problems = len(payload["split"]["fit_problem_ids"])
-                steps_per_epoch = math.ceil(fit_problems / args.batch_problems)
-                reproducibility = payload["reproducibility"]
-                identities[dataset].add(reproducibility["initial_state_sha256"])
-                inputs[dataset].add(reproducibility["input"]["features_sha256"])
-                rows.append(
-                    {
-                        "dataset": dataset,
-                        "method": method,
-                        "learning_rate": learning_rate,
-                        "training_seed": invocation["training_seed"],
-                        "split_seed": invocation["split_seed"],
-                        "best_epoch_zero_based": best_epoch,
-                        "best_optimizer_step": (best_epoch + 1) * steps_per_epoch,
-                        "validation_objective": float(selected["validation_objective"]),
-                        "validation_point_loss": float(selected["validation_point_loss"]),
-                        "validation_protect_loss": float(selected["validation_protect_loss"]),
-                        "validation_ap": float(selected["validation_ap"]),
-                        "validation_auc": float(selected["validation_auc"]),
-                        "initial_state_sha256": reproducibility["initial_state_sha256"],
-                        "final_state_sha256": reproducibility["final_state_sha256"],
-                        "invocation_fingerprint": payload["invocation_fingerprint"],
-                    }
-                )
+                    objective_min = min(
+                        float(row["validation_objective"]) for row in history
+                    )
+                    if not math.isclose(
+                        float(selected["validation_objective"]),
+                        objective_min,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    ):
+                        audit_errors.append(
+                            f"best epoch is not objective minimum: {probe_path}"
+                        )
+                    fit_problems = len(payload["split"]["fit_problem_ids"])
+                    steps_per_epoch = math.ceil(fit_problems / args.batch_problems)
+                    reproducibility = payload["reproducibility"]
+                    input_identity = reproducibility["input"]
+                    identities[dataset].add(reproducibility["initial_state_sha256"])
+                    features[dataset].add(input_identity["features_sha256"])
+                    row_keys[dataset].add(input_identity["row_keys_sha256"])
+                    masks[dataset].add(
+                        (
+                            input_identity["fit_mask_sha256"],
+                            input_identity["validation_mask_sha256"],
+                        )
+                    )
+                    targets[(dataset, grader)].add(input_identity["target_sha256"])
+                    rows.append(
+                        {
+                            "grader": grader,
+                            "dataset": dataset,
+                            "method": method,
+                            "learning_rate": learning_rate,
+                            "training_seed": invocation["training_seed"],
+                            "split_seed": invocation["split_seed"],
+                            "best_epoch_zero_based": best_epoch,
+                            "best_optimizer_step": (best_epoch + 1) * steps_per_epoch,
+                            "validation_objective": float(
+                                selected["validation_objective"]
+                            ),
+                            "validation_point_loss": float(
+                                selected["validation_point_loss"]
+                            ),
+                            "validation_protect_loss": float(
+                                selected["validation_protect_loss"]
+                            ),
+                            "validation_ap": float(selected["validation_ap"]),
+                            "validation_auc": float(selected["validation_auc"]),
+                            "initial_state_sha256": reproducibility[
+                                "initial_state_sha256"
+                            ],
+                            "final_state_sha256": reproducibility[
+                                "final_state_sha256"
+                            ],
+                            "invocation_fingerprint": payload[
+                                "invocation_fingerprint"
+                            ],
+                        }
+                    )
 
     for dataset in DATASETS:
         if len(identities[dataset]) != 1:
             audit_errors.append(
                 f"initialization mismatch for {dataset}: {len(identities[dataset])} hashes"
             )
-        if len(inputs[dataset]) != 1:
+        if len(features[dataset]) != 1:
             audit_errors.append(
-                f"feature-input mismatch for {dataset}: {len(inputs[dataset])} hashes"
+                f"feature-input mismatch for {dataset}: {len(features[dataset])} hashes"
             )
+        if len(row_keys[dataset]) != 1:
+            audit_errors.append(f"row-key mismatch for {dataset}")
+        if len(masks[dataset]) != 1:
+            audit_errors.append(f"fit/validation mask mismatch for {dataset}")
+        for grader in GRADERS:
+            if len(targets[(dataset, grader)]) != 1:
+                audit_errors.append(f"target mismatch within {dataset}/{grader}")
 
-    expected = len(DATASETS) * len(METHODS) * len(LEARNING_RATES)
+    expected = len(GRADERS) * len(DATASETS) * len(METHODS) * len(LEARNING_RATES)
     if len(rows) != expected:
         audit_errors.append(f"expected {expected} rows, got {len(rows)}")
     status = "complete" if not audit_errors else "failed"

@@ -3,6 +3,13 @@ status: primary_training_hyperparameter_selection
 base_config: configs/deepseek7b_deterministic_grader_pair_v2.yaml
 
 scientific_scope:
+  graders:
+    original_13k_parser:
+      source_root: results/deepseek7b_main_v2/cache
+      cap_hit_rule: last_complete_boxed_else_last_number
+    forced_answer_at_cap:
+      source_root: results/deepseek7b_forced_cap_grader_method_v1/views
+      cap_hit_rule: greedy_forced_answer_at_exact_13k_max48
   datasets: [gsm8k, math]
   methods:
     bce:
@@ -31,6 +38,15 @@ controls:
   calibration_during_sweep: none
   heldout_access_during_sweep: forbidden
   formal_hardware_class: NVIDIA_A100_80GB_PCIe
+  paired_grader_invariants:
+    - problem_ids
+    - checkpoint_positions
+    - hidden_features
+    - fit_validation_split
+    - initialization_for_equal_seed
+    - batch_order_for_equal_seed
+  grader_allowed_difference:
+    - cap_hit_dense_final_prediction_and_derived_labels_only
 
 selection_plan:
   coarse_screen:
