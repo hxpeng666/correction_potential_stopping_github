@@ -1,0 +1,60 @@
+primary: false
+runnable: true
+protocol_id: cps_deepseek7b_deterministic_exit_suffix_v1
+report_label: Deterministic exit attribution and forced-answer suffix robustness
+seed: 0
+reproducibility:
+  protocol: cps_strict_determinism_v2_runtime_locked
+  runtime_lock: configs/runtime_a100_torch271_cuda126_v1.json
+  require_clean_git: true
+model:
+  id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  local_path: /mnt/hbnas/home/wj/Weights/DeepSeek/DeepSeek-R1-Distill-Qwen-7B
+  dtype: bfloat16
+  attention_backend: sdpa
+  frozen: true
+source:
+  data_root: /mnt/hbnas/home/wj/correction_potential_stopping/results/deepseek7b_forced_cap_grader_method_v1/views
+  probe_root: /mnt/hbnas/home/wj/correction_potential_stopping/results/deepseek7b_deterministic_three_axis_ablation_v2
+  grader: forced_answer_at_exact_13k_prefix_for_cap_hits
+  checkpoint_schedule: paragraph
+  checkpoint_stored_compatibility_tag: sentence
+  range_filter: none
+sampling:
+  unit: problem_trajectory
+  checkpoint_selection: six_even_order_statistics_without_label_access
+  checkpoints_per_trajectory: 6
+  stable_rank_seed: 0
+  strata:
+    - {dataset: gsm8k, split: calibration, count: 60}
+    - {dataset: gsm8k, split: heldout, count: 100}
+    - {dataset: math, split: calibration, count: 70}
+    - {dataset: math500, split: heldout, count: 100}
+    - {dataset: aime, split: heldout, count: 30}
+forced_answer:
+  decoding: greedy_argmax
+  do_sample: false
+  max_new_tokens: 48
+  parser: dataset_standard_last_complete_boxed_else_last_number
+  variants:
+    current_box:
+      role: frozen_reference
+      suffix: "\n</think>\n\n\\boxed{"
+    final_answer_box:
+      suffix: "\n</think>\n\nFinal Answer: \\boxed{"
+    final_answer_plain:
+      suffix: "\n</think>\n\nFinal Answer: "
+    natural_answer:
+      suffix: "\n</think>\n\nThe answer is: "
+    close_only:
+      suffix: "\n</think>\n\n"
+    no_close_final_answer:
+      suffix: "\n\nFinal Answer: "
+exit_attribution:
+  probe_variant: primary
+  calibration: trajectory_envelope_ltt
+  alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
+  transition_classes: [C_to_C, C_to_W, W_to_C, W_to_W]
+  test_sets: [gsm8k, math500, aime2024]
+  heldout_used_for_selection: false
+
