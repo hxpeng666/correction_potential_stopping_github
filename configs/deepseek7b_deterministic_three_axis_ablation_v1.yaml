@@ -56,7 +56,7 @@ data:
   grader: forced_answer_at_exact_13k_prefix_for_cap_hits
   split_unit: problem
   forced_cap_root: results/deepseek7b_forced_cap_grader_method_v1/views
-  auxiliary_feature_root: results/deepseek7b_method_exploration13k_v1/aux
+  auxiliary_feature_root: results/deepseek7b_method_axes_original_v2_v1/aux
   gsm8k: {probe_train: 1000, calibration: 500, heldout: 1319}
   math:
     probe_train: 1400
