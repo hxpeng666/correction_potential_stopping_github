@@ -121,6 +121,37 @@ def safe_ap_auc(truth: np.ndarray, scores: np.ndarray) -> tuple[float, float]:
     )
 
 
+def model_selection_key(
+    rule: str,
+    *,
+    validation_ap: float,
+    validation_auc: float,
+    validation_objective: float,
+    validation_b0_token_reduction: float,
+) -> tuple[float, ...]:
+    """Return a maximization key for internal model-checkpoint selection.
+
+    ``legacy_b0_token`` is retained only to reproduce the historical protocol.
+    It searches a policy threshold at every epoch and therefore mixes probe
+    checkpoint selection with the later calibration problem.  The primary
+    corrected rule is ``label_ap``: freeze the probe using a threshold-free
+    validation statistic, then select the deployment threshold exactly once on
+    the independent calibration split.
+    """
+    if rule == "legacy_b0_token":
+        return (
+            validation_b0_token_reduction,
+            validation_ap,
+            validation_auc,
+            -validation_objective,
+        )
+    if rule == "label_ap":
+        return (validation_ap, validation_auc, -validation_objective)
+    if rule == "validation_objective":
+        return (-validation_objective, validation_ap, validation_auc)
+    raise ValueError(f"unknown model-selection rule: {rule}")
+
+
 def prepare_cost_columns(
     frame: pd.DataFrame, fallbacks: list[dict[str, Any]]
 ) -> None:
@@ -464,6 +495,16 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--patience", type=int)
     parser.add_argument("--batch-problems", type=int)
+    parser.add_argument(
+        "--selection-rule",
+        choices=("legacy_b0_token", "label_ap", "validation_objective"),
+        default="legacy_b0_token",
+        help=(
+            "Internal probe-checkpoint selection. label_ap and "
+            "validation_objective are threshold-free; legacy_b0_token is "
+            "available only for exact historical reproduction."
+        ),
+    )
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--screen-only", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -540,6 +581,7 @@ def main() -> None:
         "lambda_protect": args.lambda_protect,
         "lambda_separation": args.lambda_separation,
         "gamma": args.gamma,
+        "selection_rule": args.selection_rule,
         "screen_only": args.screen_only,
         "reproducibility_protocol": reproducibility,
         "runtime_lock": runtime_lock_audit,
@@ -649,6 +691,11 @@ def main() -> None:
     best = None
     patience = 0
     history = []
+    validation_groups = problem_groups(frame, validation_mask)
+    validation_positions = np.concatenate(validation_groups)
+    validation_offsets = np.cumsum(
+        [0] + [len(group) for group in validation_groups]
+    )
     for epoch in range(epochs):
         model.train()
         totals = []
@@ -697,6 +744,31 @@ def main() -> None:
         validation_scores = predict_scores(
             model, train_features[validation_mask], device
         )
+        model.eval()
+        with torch.no_grad():
+            validation_logits = model(
+                torch.from_numpy(train_features[validation_positions]).to(device)
+            )
+            validation_breakdown = correction_objective(
+                validation_logits,
+                torch.from_numpy(target[validation_positions]).to(device),
+                torch.from_numpy(current_success[validation_positions]).to(device),
+                torch.from_numpy(dense_success[validation_positions]).to(device),
+                torch.from_numpy(remaining[validation_positions]).to(device),
+                validation_offsets,
+                point_mode=args.point_loss,
+                trajectory_scope=args.trajectory_scope,
+                aggregation=args.trajectory_aggregation,
+                beta=args.beta,
+                rho=args.rho,
+                lambda_protect=args.lambda_protect,
+                lambda_separation=args.lambda_separation,
+                gamma=args.gamma,
+            )
+        validation_objective = float(validation_breakdown.total.cpu())
+        validation_point_loss = float(validation_breakdown.point.cpu())
+        validation_protect_loss = float(validation_breakdown.protect.cpu())
+        validation_separation_loss = float(validation_breakdown.separation.cpu())
         validation_truth = target[validation_mask]
         ap, auc = safe_ap_auc(validation_truth, validation_scores)
         validation_frame = frame.loc[validation_mask].reset_index(drop=True)
@@ -718,15 +790,22 @@ def main() -> None:
             "separated_trajectory_batches": separated_count,
             "validation_ap": ap,
             "validation_auc": auc,
+            "validation_objective": validation_objective,
+            "validation_point_loss": validation_point_loss,
+            "validation_protect_loss": validation_protect_loss,
+            "validation_separation_loss": validation_separation_loss,
             "validation_B0": strict,
         }
         history.append(record)
         print(json.dumps(record), flush=True)
-        key = (
-            float(strict["deployed_token_reduction"]),
-            ap,
-            auc,
-            -record["loss"],
+        key = model_selection_key(
+            args.selection_rule,
+            validation_ap=ap,
+            validation_auc=auc,
+            validation_objective=validation_objective,
+            validation_b0_token_reduction=float(
+                strict["deployed_token_reduction"]
+            ),
         )
         if best is None or key > best[0]:
             best = (
@@ -777,6 +856,11 @@ def main() -> None:
         },
         "auxiliary_audit": {"probe_train": train["auxiliary_audit"]},
         "best_epoch": int(best[1]),
+        "model_selection": {
+            "rule": args.selection_rule,
+            "threshold_free": args.selection_rule != "legacy_b0_token",
+            "calibration_split_used_for_model_selection": False,
+        },
         "history": history,
         "internal_validation": {
             "label_ap": safe_ap_auc(target[validation_mask], internal_scores)[0],

@@ -53,6 +53,36 @@ from src.utils import atomic_json, load_yaml
 from deepseek7b_protocol_v1 import success as answer_equivalent
 
 
+def model_selection_key(
+    rule: str,
+    *,
+    method: str,
+    validation_ap: float,
+    validation_auc: float,
+    validation_b0_token_reduction: float | None,
+    training_loss: float,
+) -> tuple[float, ...]:
+    """Select a probe checkpoint without implicitly recalibrating its policy.
+
+    Controlled target baselines have always used threshold-free label metrics.
+    For the correction probe, ``legacy_b0_token`` reproduces the historical
+    per-epoch B=0 threshold search; ``label_ap`` is the corrected protocol and
+    leaves threshold selection to the independent calibration split.
+    """
+    if method == "correction" and rule == "legacy_b0_token":
+        if validation_b0_token_reduction is None:
+            raise ValueError("legacy correction selection requires B=0 replay")
+        return (
+            validation_b0_token_reduction,
+            validation_ap,
+            validation_auc,
+            -training_loss,
+        )
+    if rule in {"legacy_b0_token", "label_ap"}:
+        return (validation_ap, validation_auc, -training_loss)
+    raise ValueError(f"unknown model-selection rule: {rule}")
+
+
 def build_dynamic_features(frame, hidden, capture_layers, *, layer, feature_kind):
     """Build the deployed h + six scalar features for any decoder width."""
     if feature_kind != "full_no_delta":
@@ -228,6 +258,15 @@ def main() -> None:
     parser.add_argument("--trajectory-beta", type=float)
     parser.add_argument("--trajectory-weight", type=float, default=1.0)
     parser.add_argument("--epochs", type=int)
+    parser.add_argument(
+        "--selection-rule",
+        choices=("legacy_b0_token", "label_ap"),
+        default="legacy_b0_token",
+        help=(
+            "Use threshold-free label AP for the corrected protocol, or the "
+            "historical per-epoch B=0 token objective for exact reproduction."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--allow-unlocked-legacy",
@@ -301,6 +340,7 @@ def main() -> None:
         "trajectory_aggregation": args.trajectory_aggregation,
         "trajectory_beta": trajectory_beta,
         "trajectory_weight": float(args.trajectory_weight),
+        "selection_rule": args.selection_rule,
         "raw_input": artifact_manifest(args.raw_root),
         "heldout_input": artifact_manifest(args.heldout_root) if args.heldout_root else None,
         "probe_config": config["probe"],
@@ -535,18 +575,20 @@ def main() -> None:
                 row["is_no_stop_sentinel"] = no_stop
                 internal_curve.append(row)
             strict = select_empirical_budget(internal_curve, 0)
-            key = (
-                strict["replay_wall_reduction"],
-                validation_ap,
-                validation_auc,
+            validation_b0_token_reduction = float(
+                strict["replay_wall_reduction"]
             )
         else:
             strict = None
-            key = (
-                validation_ap,
-                validation_auc,
-                -float(np.mean(losses)),
-            )
+            validation_b0_token_reduction = None
+        key = model_selection_key(
+            args.selection_rule,
+            method=args.method,
+            validation_ap=validation_ap,
+            validation_auc=validation_auc,
+            validation_b0_token_reduction=validation_b0_token_reduction,
+            training_loss=float(np.mean(losses)),
+        )
         record = {
             "epoch": epoch,
             "loss": float(np.mean(losses)),
@@ -721,6 +763,14 @@ def main() -> None:
         "fit_problem_ids": fit_ids,
         "validation_problem_ids": validation_ids,
         "best_epoch": int(best[1]),
+        "model_selection": {
+            "rule": args.selection_rule,
+            "threshold_free": not (
+                args.method == "correction"
+                and args.selection_rule == "legacy_b0_token"
+            ),
+            "calibration_split_used_for_model_selection": False,
+        },
         "history": history,
         "heldout_label_ap_descriptive": heldout_ap,
         "heldout_label_auc_descriptive": heldout_auc,
