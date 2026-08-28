@@ -95,7 +95,7 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     # the audit without letting it invalidate the training negative control.
     informational_checks = {
         "same_calibration": (
-            left["report"]["calibration"] == right["report"]["calibration"]
+            left["report"].get("calibration") == right["report"].get("calibration")
         ),
     }
     all_required_exact = all(required_checks.values())
