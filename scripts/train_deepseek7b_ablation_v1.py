@@ -246,8 +246,11 @@ def main() -> None:
         raise ValueError("controlled target baselines use checkpoint BCE only")
     config = load_yaml(args.config)
     reproducibility = strict_reproducibility(seed=0, num_threads=1)
-    torch.cuda.set_device(args.gpu)
-    device = torch.device(f"cuda:{args.gpu}")
+    if args.gpu >= 0:
+        torch.cuda.set_device(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
+    else:
+        device = torch.device("cpu")
     runtime_identity = environment_provenance(device)
     runtime_lock_value = config.get("reproducibility", {}).get("runtime_lock")
     if runtime_lock_value is None and not args.allow_unlocked_legacy:

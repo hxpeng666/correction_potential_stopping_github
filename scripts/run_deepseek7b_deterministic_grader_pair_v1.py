@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import torch
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,8 @@ sys.path.insert(0, str(ROOT))
 from src.reproducibility import (
     code_provenance,
     deterministic_subprocess_environment,
+    enforce_runtime_lock,
+    environment_provenance,
     sha256_file,
 )
 
@@ -107,6 +110,9 @@ def main() -> None:
         runtime_lock_path = ROOT / runtime_lock_path
     if not runtime_lock_path.is_file():
         raise FileNotFoundError(runtime_lock_path)
+    torch.cuda.set_device(args.gpu)
+    runner_runtime = environment_provenance(torch.device(f"cuda:{args.gpu}"))
+    runtime_lock_audit = enforce_runtime_lock(runtime_lock_path, runner_runtime)
     environment = deterministic_subprocess_environment(seed=0)
     code_identity = code_provenance(
         ROOT,
@@ -135,6 +141,7 @@ def main() -> None:
         "runtime_lock": {
             "path": str(runtime_lock_path.resolve()),
             "sha256": sha256_file(runtime_lock_path),
+            "audit": runtime_lock_audit,
         },
         "conditions": {key: str(value) for key, value in conditions.items()},
         "gpu": args.gpu,
@@ -212,6 +219,7 @@ def main() -> None:
                     "--heldout-root", str(data_root / "aime"),
                     "--output", str(condition_root / "probes/aime" / label),
                     "--gpu", str(args.gpu),
+                    "--runtime-lock", str(runtime_lock_path),
                     "--resume",
                 ],
                 logs / f"eval_{condition}_aime_{label}.log",

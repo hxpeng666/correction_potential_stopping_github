@@ -117,6 +117,7 @@ MATH-500 训练出的 probe/阈值在 AIME 2024 上只复用、不重训、不�
 python scripts/evaluate_deepseek7b_ood_v2.py \
   --dataset aime --source-probe outputs/deepseek7b/bce_traj \
   --heldout-root results/deepseek7b_main_v2/cache/aime/heldout \
+  --runtime-lock configs/runtime_a100_torch271_cuda126_v1.json \
   --output outputs/deepseek7b/aime_bce_traj --gpu 0
 ```
 

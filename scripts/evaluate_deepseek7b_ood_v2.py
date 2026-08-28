@@ -28,6 +28,7 @@ from src.legacy_empirical_probe_normalized_v1 import (
 )
 from src.reproducibility import (
     code_provenance,
+    enforce_runtime_lock,
     environment_provenance,
     sha256_array,
     sha256_json,
@@ -51,10 +52,29 @@ def main() -> None:
     parser.add_argument("--heldout-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu", type=int, required=True)
+    parser.add_argument("--runtime-lock", type=Path)
+    parser.add_argument("--allow-unlocked-legacy", action="store_true")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     reproducibility = strict_reproducibility(seed=0, num_threads=1)
     project = Path(__file__).resolve().parents[1]
+    if args.gpu >= 0:
+        torch.cuda.set_device(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
+    else:
+        device = torch.device("cpu")
+    runtime_identity = environment_provenance(device)
+    if args.runtime_lock is None and not args.allow_unlocked_legacy:
+        raise RuntimeError(
+            "formal OOD evaluation requires --runtime-lock; use "
+            "--allow-unlocked-legacy only for historical outputs"
+        )
+    runtime_lock_audit = None
+    if args.runtime_lock is not None:
+        runtime_lock_path = args.runtime_lock
+        if not runtime_lock_path.is_absolute():
+            runtime_lock_path = project / runtime_lock_path
+        runtime_lock_audit = enforce_runtime_lock(runtime_lock_path, runtime_identity)
     code_identity = code_provenance(
         project,
         (
@@ -70,6 +90,13 @@ def main() -> None:
     for path in (source_json_path, source_pt_path, source_marker_path):
         if not path.is_file():
             raise FileNotFoundError(path)
+    source_report = json.loads(source_json_path.read_text(encoding="utf-8"))
+    source_runtime_lock = source_report.get("reproducibility", {}).get("runtime_lock")
+    if runtime_lock_audit is not None:
+        if source_runtime_lock is None:
+            raise RuntimeError("formal OOD evaluation refuses an unlocked source probe")
+        if source_runtime_lock.get("sha256") != runtime_lock_audit.get("sha256"):
+            raise RuntimeError("source probe and OOD evaluation runtime locks differ")
     heldout_manifest = artifact_manifest(args.heldout_root)
     invocation = {
         "dataset": args.dataset,
@@ -81,6 +108,7 @@ def main() -> None:
         "heldout_input": heldout_manifest,
         "protocol": "same frozen MATH probe and calibration thresholds; OOD evaluation only",
         "reproducibility_protocol": reproducibility,
+        "runtime_lock": runtime_lock_audit,
         "code_identity": code_identity,
     }
     invocation_fingerprint = canonical_fingerprint(invocation)
@@ -99,7 +127,6 @@ def main() -> None:
         raise RuntimeError(f"refusing to overwrite OOD output: {args.output}")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    source_report = json.loads(source_json_path.read_text(encoding="utf-8"))
     source_model = torch.load(source_pt_path, map_location="cpu", weights_only=False)
     if source_report.get("status") != "complete" or source_model.get("status") != "complete":
         raise ValueError("source probe is incomplete")
@@ -136,9 +163,6 @@ def main() -> None:
         fallback["dense_wall_ms"] = float(fallback["dense_tokens"])
         fallback["adaptive_fallback_wall_ms"] = float(fallback["dense_tokens"])
 
-    torch.cuda.set_device(args.gpu)
-    device = torch.device(f"cuda:{args.gpu}")
-    runtime_identity = environment_provenance(device)
     model = FinalPaperProbe(int(source_model["input_width"])).to(device)
     model.load_state_dict(source_model["state_dict"])
     scores = predict_scores(model, features, device)
@@ -181,6 +205,7 @@ def main() -> None:
         "online_workpoints": source_report["online_workpoints"],
         "reproducibility": {
             "settings": reproducibility,
+            "runtime_lock": runtime_lock_audit,
             "code": code_identity,
             "environment": runtime_identity,
             "input": {

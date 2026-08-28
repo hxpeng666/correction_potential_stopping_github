@@ -10,12 +10,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT))
+
 import torch
 
 from deepseek7b_protocol_v1 import numeric_value, success
+from src.reproducibility import deterministic_subprocess_environment
 
 
-PROJECT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 
 
@@ -155,8 +158,14 @@ def main() -> None:
                 "1.0",
                 "--epochs",
                 "2",
+                "--allow-unlocked-legacy",
             ]
-            subprocess.run(command, cwd=PROJECT, check=True)
+            subprocess.run(
+                command,
+                cwd=PROJECT,
+                env=deterministic_subprocess_environment(seed=0),
+                check=True,
+            )
             result = json.loads((root / label / "probe.json").read_text(encoding="utf-8"))
             assert result["status"] == "complete"
             assert result["run_spec"]["architecture"] == [3590, 384, 96, 1]
@@ -175,8 +184,14 @@ def main() -> None:
             str(root / "aime_correctness"),
             "--gpu",
             "-1",
+            "--allow-unlocked-legacy",
         ]
-        subprocess.run(ood_command, cwd=PROJECT, check=True)
+        subprocess.run(
+            ood_command,
+            cwd=PROJECT,
+            env=deterministic_subprocess_environment(seed=0),
+            check=True,
+        )
         ood_result = json.loads(
             (root / "aime_correctness" / "probe.json").read_text(encoding="utf-8")
         )
