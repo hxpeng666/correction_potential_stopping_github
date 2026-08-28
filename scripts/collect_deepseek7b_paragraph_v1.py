@@ -17,6 +17,9 @@ from typing import Any
 import torch
 import yaml
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from deepseek7b_protocol_v1 import (
     CheckpointHiddenCapture,
     atomic_torch_save,
@@ -31,6 +34,13 @@ from deepseek7b_protocol_v1 import (
     stable_seed,
     success,
     tail_mean,
+)
+from src.reproducibility import (
+    code_provenance,
+    enforce_runtime_lock,
+    environment_provenance,
+    sha256_file,
+    strict_reproducibility,
 )
 
 
@@ -149,8 +159,10 @@ def collect_one(
     device: torch.device,
     worker_id: str,
     gpu: int,
+    reproducibility_audit: dict[str, Any] | None,
 ) -> dict[str, Any]:
     problem_id = str(record["problem_id"])
+    problem_seed = stable_seed(int(config["seed"]), problem_id)
     prompt_text = render_prompt(tokenizer, str(record["question"]))
     input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
     generation = config["generation"]
@@ -160,7 +172,7 @@ def collect_one(
             model,
             tokenizer,
             input_ids,
-            seed=stable_seed(int(config["seed"]), problem_id),
+            seed=problem_seed,
             max_new_tokens=int(generation["dense_max_new_tokens"]),
             temperature=float(generation["temperature"]),
             top_p=float(generation["top_p"]),
@@ -174,7 +186,7 @@ def collect_one(
             tokenizer,
             input_ids,
             source_dense=source["dense"],
-            seed=stable_seed(int(config["seed"]), problem_id),
+            seed=problem_seed,
             max_new_tokens=int(generation["dense_max_new_tokens"]),
             temperature=float(generation["temperature"]),
             top_p=float(generation["top_p"]),
@@ -375,6 +387,8 @@ def collect_one(
         "problem_id": problem_id,
         "dtype": "bfloat16",
         "seed": int(config["seed"]),
+        "problem_seed": problem_seed,
+        "reproducibility": reproducibility_audit,
         "actual_checkpoint_schedule": "paragraph",
         "checkpoint_protocol": config["checkpoint"],
         "capture_layers": [capture_layer],
@@ -455,7 +469,21 @@ def main() -> None:
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--num-shards", type=int, required=True)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--problem-id",
+        action="append",
+        default=[],
+        help="Operational exact-ID filter; may be repeated and does not alter labels.",
+    )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--allow-unlocked-legacy",
+        action="store_true",
+        help=(
+            "Explicitly run a historical configuration without the committed runtime "
+            "lock. Such outputs are non-formal and receive the legacy fingerprint."
+        ),
+    )
     parser.add_argument(
         "--task-scope",
         choices=("all", "heldout_extension_targets"),
@@ -468,11 +496,67 @@ def main() -> None:
     )
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    fingerprint = canonical_fingerprint(config)
+    runtime_lock_value = config.get("reproducibility", {}).get("runtime_lock")
+    if runtime_lock_value is None and not args.allow_unlocked_legacy:
+        raise RuntimeError(
+            "formal collection requires reproducibility.runtime_lock; use a committed "
+            "locked config, or pass --allow-unlocked-legacy only for historical work"
+        )
+    reproducibility_audit = None
+    if runtime_lock_value is not None:
+        deterministic_settings = strict_reproducibility(seed=0, num_threads=1)
+        torch.cuda.set_device(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
+        runtime_identity = environment_provenance(device)
+        runtime_lock_path = Path(runtime_lock_value)
+        if not runtime_lock_path.is_absolute():
+            runtime_lock_path = ROOT / runtime_lock_path
+        runtime_lock_audit = enforce_runtime_lock(runtime_lock_path, runtime_identity)
+        code_identity = code_provenance(
+            ROOT,
+            (
+                "scripts/collect_deepseek7b_paragraph_v1.py",
+                "scripts/deepseek7b_protocol_v1.py",
+                "src/reproducibility.py",
+            ),
+        )
+        reproducibility_audit = {
+            "settings": deterministic_settings,
+            "runtime_lock": runtime_lock_audit,
+            "environment": runtime_identity,
+            "code": code_identity,
+        }
+        # Keep the scientific fingerprint independent of logical GPU index and
+        # output timestamps while binding it to the exact code and runtime lock.
+        fingerprint = canonical_fingerprint(
+            {
+                "config": config,
+                "formal_reproducibility": {
+                    "protocol_id": deterministic_settings["protocol_id"],
+                    "runtime_lock_id": runtime_lock_audit["lock_id"],
+                    "runtime_lock_sha256": sha256_file(runtime_lock_path),
+                    "git_commit": code_identity["git"]["commit"],
+                    "source_sha256": code_identity["source_sha256"],
+                },
+            }
+        )
+    else:
+        fingerprint = canonical_fingerprint(config)
+        torch.cuda.set_device(args.gpu)
+        device = torch.device(f"cuda:{args.gpu}")
     incremental_targets = incremental_extension_targets(config)
     prepared_root = Path(config["data"]["prepared_root"])
     output_root = Path(config["output_root"]) / "cache"
     task_pool = all_tasks(prepared_root)
+    if args.problem_id:
+        selected_problem_ids = set(args.problem_id)
+        task_pool = [
+            task for task in task_pool if str(task[2]["problem_id"]) in selected_problem_ids
+        ]
+        found_problem_ids = {str(task[2]["problem_id"]) for task in task_pool}
+        missing_problem_ids = sorted(selected_problem_ids - found_problem_ids)
+        if missing_problem_ids:
+            raise ValueError(f"unknown --problem-id values: {missing_problem_ids}")
     if args.task_scope == "heldout_extension_targets":
         task_pool = [
             task
@@ -487,8 +571,6 @@ def main() -> None:
     ]
     if args.limit is not None:
         tasks = tasks[: args.limit]
-    torch.cuda.set_device(args.gpu)
-    device = torch.device(f"cuda:{args.gpu}")
     free, total = torch.cuda.mem_get_info(device)
     print(
         json.dumps(
@@ -534,6 +616,7 @@ def main() -> None:
                 device,
                 args.worker_id,
                 args.gpu,
+                reproducibility_audit,
             )
             completed += 1
             print(json.dumps({"status": "completed", "completed": completed, **result}), flush=True)
@@ -570,6 +653,8 @@ def main() -> None:
         "elapsed_seconds": time.time() - started,
         "protocol_fingerprint": fingerprint,
         "task_scope": args.task_scope,
+        "problem_ids": list(args.problem_id),
+        "reproducibility": reproducibility_audit,
     }
     summary_path = Path(config["output_root"]) / "workers" / f"{args.worker_id}.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)

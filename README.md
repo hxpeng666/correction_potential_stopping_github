@@ -79,19 +79,28 @@ python scripts/prepare_deepseek7b_data_v1.py \
   --output-root data/deepseek7b_main_v2
 ```
 
-采集 paragraph checkpoint（单卡示例，可用互斥 shard 并行）：
+正式采集 paragraph checkpoint（单卡示例，可用互斥 shard 并行）：
 
 ```bash
-python scripts/collect_deepseek7b_paragraph_v1.py \
-  --config configs/deepseek7b_main_v2.yaml \
-  --gpu 0 --worker-id local-0 --shard-index 0 --num-shards 1 --resume
+python scripts/run_committed_experiment_v1.py \
+  --name deepseek7b-deterministic-collection-worker0 \
+  --output-root results/deepseek7b_deterministic_recollection_v1/launch_worker0 \
+  --config configs/deepseek7b_deterministic_recollection_v1.yaml -- \
+  python scripts/collect_deepseek7b_paragraph_v1.py \
+    --config configs/deepseek7b_deterministic_recollection_v1.yaml \
+    --gpu 0 --worker-id local-0 --shard-index 0 --num-shards 1 --resume
 ```
+
+正式采集默认要求已提交的 runtime lock；旧的未锁配置只能显式加
+`--allow-unlocked-legacy` 进行历史检查，其输出不能进入新结果表。Dense
+仍按论文协议使用采样，但每道题的 RNG seed 由全局 seed 与 problem ID
+稳定派生，因此与 worker 数、shard 顺序无关。
 
 训练五组 probe 时，对 `correctness/consistency/last_switch` 使用 `--loss bce`；对 `bce` 使用 `--method correction --loss bce`；对 `bce_traj` 使用：
 
 ```bash
 python scripts/train_deepseek7b_ablation_v1.py \
-  --config configs/deepseek7b_main_v2.yaml \
+  --config configs/deepseek7b_deterministic_grader_pair_v2.yaml \
   --raw-root results/deepseek7b_main_v2/cache \
   --heldout-root results/deepseek7b_main_v2/cache/math500/heldout \
   --output outputs/deepseek7b/bce_traj \

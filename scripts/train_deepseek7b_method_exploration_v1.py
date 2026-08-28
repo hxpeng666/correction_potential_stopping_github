@@ -467,6 +467,14 @@ def main() -> None:
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--screen-only", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--allow-unlocked-legacy",
+        action="store_true",
+        help=(
+            "Explicitly run a historical config without a committed runtime lock. "
+            "Such output is non-formal and must not be mixed with locked results."
+        ),
+    )
     args = parser.parse_args()
     output_lock = acquire_output_lock(args.output)
 
@@ -479,6 +487,12 @@ def main() -> None:
         device = torch.device("cpu")
     runtime_identity = environment_provenance(device)
     runtime_lock_value = config.get("reproducibility", {}).get("runtime_lock")
+    if runtime_lock_value is None and not args.allow_unlocked_legacy:
+        raise RuntimeError(
+            "formal method exploration requires reproducibility.runtime_lock; use a "
+            "committed locked config, or pass --allow-unlocked-legacy only to "
+            "inspect historical protocols"
+        )
     runtime_lock_audit = None
     if runtime_lock_value is not None:
         runtime_lock_path = Path(runtime_lock_value)

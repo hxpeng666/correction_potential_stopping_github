@@ -29,6 +29,19 @@ not yet have a dedicated runner must be launched through
 - AdamW fused/foreach kernels disabled;
 - one probe-training process per GPU.
 
+The same settings are mandatory for formal Dense/checkpoint collection. Dense
+decoding intentionally retains the scientific sampling protocol
+(`temperature=0.6`, `top_p=0.95`, `top_k=20`); reproducibility does not mean
+silently changing it to greedy. Instead, each problem receives a dedicated
+seed derived by SHA-256 from `(global_seed, problem_id)`, so worker count,
+sharding and scheduling order cannot change its random stream. The collection
+artifact records that derived seed and the locked code/runtime identity.
+
+Low-level DeepSeek collection and probe-training entry points fail closed when
+`reproducibility.runtime_lock` is absent. `--allow-unlocked-legacy` is an
+explicit escape hatch for examining historical protocols only; such outputs
+are non-formal and must not be mixed with locked results.
+
 ## Runtime lock (required for formal v2 runs)
 
 Recording an environment is not sufficient: a later run could record a changed
@@ -75,3 +88,11 @@ Use a stable output name such as
 `<model>_<study>_<protocol>_vN`.  Never overwrite an earlier directory.  The
 result manifest is the authoritative mapping from that run name to its Git
 commit; optional Git tags may use `experiment/<run-name>` after completion.
+
+## Equality scope
+
+Scientific equality is bitwise for generated token IDs, entropy values,
+checkpoint positions, hidden states, forced-answer token IDs, labels, probe
+parameters and scores. Operational values such as timestamps, host names,
+logical GPU indices and measured wall time are recorded for diagnostics but are
+excluded from scientific equality because they are expected to differ.

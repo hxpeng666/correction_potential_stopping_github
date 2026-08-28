@@ -26,6 +26,10 @@
 9. `audit_deepseek7b_completion_v1.py`
 
 正式 `bce_traj` 必须使用 `--trajectory-aggregation normalized_softmin --trajectory-beta 0.5 --trajectory-weight 1`；发布版训练器默认也已设为 normalized。
+正式 DeepSeek 采集与 probe 训练必须使用带
+`reproducibility.runtime_lock` 的已提交配置；历史配置只允许显式
+`--allow-unlocked-legacy`，不能与正式结果混用。跨卡采集科学字段由
+`audit_deterministic_collection_pair_v1.py` 做逐值审计。
 
 ## Qwen checkpoint/目标链
 
