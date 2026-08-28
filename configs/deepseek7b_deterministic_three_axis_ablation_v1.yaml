@@ -1,0 +1,89 @@
+primary: true
+runnable: true
+protocol_id: cps_deepseek7b_deterministic_three_axis_ablation_v1
+report_label: Deterministic forced-cap-grader feature, BCE-weight, and first-hit/trajectory ablations
+seed: 0
+reproducibility:
+  protocol: cps_strict_determinism_v2_runtime_locked
+  runtime_lock: configs/runtime_a100_torch271_cuda126_v1.json
+  require_clean_git: true
+  fixed_training_seed: 0
+  fixed_split_seed: 0
+  additional_seed_selection: false
+model:
+  id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  frozen: true
+  hidden_size: 3584
+  num_hidden_layers: 28
+checkpoint:
+  scientific_schedule: paragraph
+  stored_compatibility_tag: sentence
+  range_filter: none
+  zero_checkpoint_policy: dense_fallback
+features:
+  layer_zero_based: 16
+  primary_kind: hidden_scalars
+  primary_width: 3590
+probe:
+  shared_architecture: [3590, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.00005
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  model_selection: minimum_validation_objective
+  point_loss: checkpoint_proper
+  trajectory_scope: all_dangerous
+  trajectory_aggregation: normalized_softmin
+  trajectory_softmin_beta: 0.5
+  trajectory_weight: 1.0
+calibration:
+  primary_calibrator: trajectory_envelope_ltt
+  candidate_threshold_source: probe_train_only
+  certification_split: independent_calibration_only
+  alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
+  delta: 0.05
+  grid_size: 101
+  objective: total_generated_token_reduction
+  empirical_budget_B_used: false
+data:
+  grader: forced_answer_at_exact_13k_prefix_for_cap_hits
+  split_unit: problem
+  forced_cap_root: results/deepseek7b_forced_cap_grader_method_v1/views
+  auxiliary_feature_root: results/deepseek7b_method_exploration13k_v1/aux
+  gsm8k: {probe_train: 1000, calibration: 500, heldout: 1319}
+  math:
+    probe_train: 1400
+    calibration: 700
+    per_category: {probe_train: 200, calibration: 100}
+  math500: {heldout: 500, role: ood_test}
+  aime2024: {heldout: 30, role: ood_test, threshold_source: math_calibration}
+ablation:
+  matched_control_rule: change_exactly_one_axis_from_primary
+  feature_variants:
+    - primary
+    - feature_last4_mean
+    - feature_paragraph_mean
+    - feature_prefix_mean
+    - feature_pca32_linear
+    - feature_one_step_full
+    - feature_pool_paragraph_pca256
+    - feature_pool_last4_pca128_one_step
+  bce_weight_variants:
+    - primary
+    - weight_legacy_remaining
+    - weight_problem_balanced_random
+    - weight_problem_balanced_stratified
+  first_hit_trajectory_variants:
+    - primary
+    - trajectory_none
+    - trajectory_hard_min
+    - trajectory_bottomk
+    - trajectory_cvar
+    - first_hit_earliest_safe_cvar
