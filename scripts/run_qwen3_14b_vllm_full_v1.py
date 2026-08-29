@@ -16,7 +16,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.reproducibility import code_provenance, deterministic_subprocess_environment, sha256_json
+from src.reproducibility import (
+    code_provenance,
+    deterministic_subprocess_environment,
+    sha256_file,
+    sha256_json,
+)
 
 FORMAL_WORKERS = (
     (0, 0.45, "formal_gpu0_replica0", 0, 3),
@@ -143,9 +148,19 @@ def main() -> None:
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--transformers-reference-artifact", type=Path, required=True)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--risk-gate-audit", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    risk_gate = json.loads(args.risk_gate_audit.read_text(encoding="utf-8"))
+    if (
+        risk_gate.get("status") != "complete"
+        or args.profile not in risk_gate.get("accepted_profiles", [])
+        or risk_gate.get("recommended_profile") != args.profile
+    ):
+        raise RuntimeError(
+            f"profile {args.profile} is not the completed risk-matrix recommendation"
+        )
     output = args.output_root.resolve()
     identity = code_provenance(
         ROOT,
@@ -172,6 +187,8 @@ def main() -> None:
         ),
         "git_commit": identity["git"]["commit"],
         "profile": args.profile,
+        "risk_gate_audit": str(args.risk_gate_audit.resolve()),
+        "risk_gate_audit_sha256": sha256_file(args.risk_gate_audit),
     }
     invocation_fingerprint = sha256_json(invocation)
     manifest_path = output / "RUN_MANIFEST.json"
@@ -187,6 +204,12 @@ def main() -> None:
         "invocation": invocation,
         "invocation_fingerprint": invocation_fingerprint,
         "code_identity": identity,
+        "risk_gate": {
+            "path": str(args.risk_gate_audit.resolve()),
+            "sha256": sha256_file(args.risk_gate_audit),
+            "recommended_profile": risk_gate["recommended_profile"],
+            "accepted_profiles": risk_gate["accepted_profiles"],
+        },
         "formal_workers": [
             {
                 "physical_gpu": gpu,
@@ -317,6 +340,8 @@ def main() -> None:
         "same_gpu_repeat": same_gate_payloads,
         "cross_gpu": cross_gate_payloads,
         "protocol_alignment": json.loads(alignment.read_text(encoding="utf-8")),
+        "risk_matrix_sha256": sha256_file(args.risk_gate_audit),
+        "risk_matrix_recommended_profile": risk_gate["recommended_profile"],
         "created_at": utc_now(),
     }
     atomic_json(combined, output / "DETERMINISM_GATE.json")

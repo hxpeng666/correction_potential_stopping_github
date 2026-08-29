@@ -91,3 +91,6 @@ context limit.
 No formal shard may start unless the risk matrix and all final gates pass. A crash, OOM, or any
 non-exact gate is evidence to preserve; it is not retried with a changed batch,
 dtype, context, layer, seed, GPU assignment, or decoding rule.
+The formal supervisor requires the completed `RISK_MATRIX.json` as an input,
+verifies that the requested profile is both accepted and recommended, and
+records its SHA-256 in `RUN_MANIFEST.json` and `DETERMINISM_GATE.json`.
