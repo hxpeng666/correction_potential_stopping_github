@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 
 from scripts.collect_qwen3_14b_deterministic_ood_v1 import DATA_LAYOUT
+from scripts.run_qwen3_14b_deterministic_ood_v1 import FORMAL_WORKERS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,3 +53,13 @@ def test_current_scientific_protocol_is_frozen() -> None:
     assert config["features"]["layer_zero_based"] == 20
     assert config["calibration"]["primary_calibrator"] == "trajectory_envelope_ltt"
     assert config["calibration"]["empirical_budget_B_used"] is False
+
+
+def test_four_worker_shards_are_exact_and_disjoint() -> None:
+    assert FORMAL_WORKERS == (
+        (0, "formal_gpu0_replica0", 0, 4),
+        (0, "formal_gpu0_replica1", 1, 4),
+        (1, "formal_gpu1_replica0", 2, 4),
+        (1, "formal_gpu1_replica1", 3, 4),
+    )
+    assert {worker[2] for worker in FORMAL_WORKERS} == set(range(4))
