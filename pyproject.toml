@@ -8,7 +8,7 @@ requires-python = ">=3.10"
 test = ["pytest>=8.0", "PyYAML>=6.0"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "scripts"]
 testpaths = ["tests"]
 
 [tool.ruff]
