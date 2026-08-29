@@ -2,7 +2,10 @@ from pathlib import Path
 
 import yaml
 
-from scripts.collect_qwen3_14b_deterministic_ood_v1 import DATA_LAYOUT
+from scripts.collect_qwen3_14b_deterministic_ood_v1 import (
+    DATA_LAYOUT,
+    tokenize_prompt_like_deepseek,
+)
 from scripts.run_qwen3_14b_deterministic_ood_v1 import FORMAL_WORKERS
 
 
@@ -36,7 +39,13 @@ def test_current_scientific_protocol_is_frozen() -> None:
     config = yaml.safe_load(
         (ROOT / "configs/qwen3_14b_deterministic_ood13k_v1.yaml").read_text()
     )
-    assert config["seed"] == 0
+    assert config["seed"] == 20260820
+    assert config["reproducibility"]["dense_rollout_base_seed"] == 20260820
+    assert config["prompt_tokenization"] == {
+        "render": "apply_chat_template_tokenize_false_add_generation_prompt_true",
+        "encode": "tokenizer_default_add_special_tokens",
+        "reference": "scripts/collect_deepseek7b_paragraph_v1.py",
+    }
     assert config["generation"] == {
         "dense_max_new_tokens": 13000,
         "temperature": 0.6,
@@ -53,6 +62,51 @@ def test_current_scientific_protocol_is_frozen() -> None:
     assert config["features"]["layer_zero_based"] == 20
     assert config["calibration"]["primary_calibrator"] == "trajectory_envelope_ltt"
     assert config["calibration"]["empirical_budget_B_used"] is False
+
+
+def test_dense_collection_contract_matches_frozen_deepseek_rollout() -> None:
+    qwen = yaml.safe_load(
+        (ROOT / "configs/qwen3_14b_deterministic_ood13k_v1.yaml").read_text()
+    )
+    deepseek = yaml.safe_load(
+        (ROOT / "configs/deepseek7b_main_v2.yaml").read_text()
+    )
+    assert qwen["seed"] == deepseek["seed"] == 20260820
+    for key in (
+        "dense_max_new_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "do_sample",
+        "force_answer_max_new_tokens",
+        "forced_answer_strategy",
+        "forced_answer_do_sample",
+        "force_answer_suffix",
+    ):
+        assert qwen["generation"][key] == deepseek["generation"][key]
+    for key in ("schedule", "boundary_regex", "range_filter", "zero_checkpoint_policy"):
+        assert qwen["checkpoint"][key] == deepseek["checkpoint"][key]
+    assert qwen["data"]["gsm8k"] == deepseek["data"]["gsm8k"]
+    for key in ("probe_train", "calibration", "categories", "per_category"):
+        assert qwen["data"]["math"][key] == deepseek["data"]["math"][key]
+    assert qwen["data"]["math500"] == deepseek["data"]["math500"]
+
+
+def test_prompt_tokenizer_uses_deepseek_default_special_token_path() -> None:
+    class Result:
+        input_ids = "ids"
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def __call__(self, _text, **kwargs):
+            self.kwargs = kwargs
+            return Result()
+
+    tokenizer = Recorder()
+    assert tokenize_prompt_like_deepseek(tokenizer, "prompt") == "ids"
+    assert tokenizer.kwargs == {"return_tensors": "pt"}
 
 
 def test_three_worker_shards_are_exact_and_disjoint() -> None:

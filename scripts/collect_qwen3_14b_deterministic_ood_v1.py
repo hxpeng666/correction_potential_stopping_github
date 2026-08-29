@@ -90,6 +90,11 @@ def gold_for(dataset: str, record: dict[str, Any]) -> str | None:
     raise KeyError(f"no gold answer for {dataset}:{record.get('problem_id')}")
 
 
+def tokenize_prompt_like_deepseek(tokenizer, prompt_text: str) -> torch.Tensor:
+    """Use the frozen DeepSeek two-step prompt-tokenization path exactly."""
+    return tokenizer(prompt_text, return_tensors="pt").input_ids
+
+
 def artifact_path(root: Path, dataset: str, split: str, problem_id: str) -> Path:
     return root / "cache" / dataset / split / f"sample_{problem_id}.pt"
 
@@ -153,11 +158,14 @@ def collect_one(
     problem_id = str(record["problem_id"])
     problem_seed = stable_seed(int(config["seed"]), problem_id)
     prompt_text = render_prompt(tokenizer, str(record["question"]))
-    input_ids = tokenizer(
-        prompt_text,
-        add_special_tokens=False,
-        return_tensors="pt",
-    ).input_ids.to(device)
+    expected_prompt_protocol = {
+        "render": "apply_chat_template_tokenize_false_add_generation_prompt_true",
+        "encode": "tokenizer_default_add_special_tokens",
+        "reference": "scripts/collect_deepseek7b_paragraph_v1.py",
+    }
+    if config.get("prompt_tokenization") != expected_prompt_protocol:
+        raise ValueError("prompt tokenization is not the frozen DeepSeek path")
+    input_ids = tokenize_prompt_like_deepseek(tokenizer, prompt_text).to(device)
     generation = config["generation"]
     dense = generate_dense(
         model,
@@ -313,6 +321,7 @@ def collect_one(
         "gold_answer": gold,
         "prompt_text": prompt_text,
         "prompt_tokens": int(input_ids.shape[1]),
+        "prompt_token_ids": [int(token) for token in input_ids[0].tolist()],
         "dense": {
             **dense,
             "content_tokens": dense["tokens"],

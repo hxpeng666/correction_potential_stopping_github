@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from collect_qwen3_14b_deterministic_ood_v1 import DATA_LAYOUT, all_tasks, gold_for
-from deepseek7b_protocol_v1 import success
+from deepseek7b_protocol_v1 import stable_seed, success
 from src.reproducibility import code_provenance, sha256_file
 
 
@@ -73,6 +73,16 @@ def main() -> None:
             seen.add(key)
             if value.get("status") != "complete" or value.get("protocol_id") != config["protocol_id"]:
                 errors.append(f"status/protocol mismatch: {path}")
+            expected_seed = stable_seed(int(config["seed"]), str(value.get("problem_id")))
+            if value.get("seed") != int(config["seed"]) or value.get("problem_seed") != expected_seed:
+                errors.append(f"Dense rollout seed mismatch: {path}")
+            prompt_token_ids = value.get("prompt_token_ids")
+            if (
+                not isinstance(prompt_token_ids, list)
+                or len(prompt_token_ids) != int(value.get("prompt_tokens", -1))
+                or not all(isinstance(token, int) for token in prompt_token_ids)
+            ):
+                errors.append(f"prompt token audit mismatch: {path}")
             local_fingerprint = str(value.get("protocol_fingerprint"))
             if fingerprint is None:
                 fingerprint = local_fingerprint
