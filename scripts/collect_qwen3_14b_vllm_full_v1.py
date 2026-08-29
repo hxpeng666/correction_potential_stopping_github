@@ -222,7 +222,7 @@ def enforce_full_environment_lock(path: Path) -> dict[str, Any]:
     }
 
 
-def vllm_engine_audit(config: dict[str, Any]) -> dict[str, Any]:
+def vllm_engine_audit(config: dict[str, Any], profile_name: str) -> dict[str, Any]:
     frozen = config["vllm"]
     observed = importlib.metadata.version("vllm")
     if observed != str(frozen["version"]):
@@ -233,12 +233,9 @@ def vllm_engine_audit(config: dict[str, Any]) -> dict[str, Any]:
         "dtype": "bfloat16",
         "attention_backend": "FLASH_ATTN",
         "enforce_eager": True,
-        "enable_prefix_caching": False,
         "async_scheduling": False,
-        "max_num_seqs": 1,
-        "request_batch_size": 1,
         "engine_seed": 0,
-        "gpu_memory_utilization": 0.47,
+        "gpu_memory_utilization": 0.45,
     }
     mismatches = {
         key: {"expected": value, "actual": frozen.get(key)}
@@ -247,6 +244,32 @@ def vllm_engine_audit(config: dict[str, Any]) -> dict[str, Any]:
     }
     if mismatches:
         raise RuntimeError("vLLM engine config drift: " + json.dumps(mismatches, sort_keys=True))
+    profiles = frozen.get("profiles", {})
+    if profile_name not in profiles:
+        raise ValueError(f"unknown vLLM engine profile: {profile_name}")
+    profile = profiles[profile_name]
+    if set(profile) != {"dense", "hidden", "branches"}:
+        raise RuntimeError(f"incomplete vLLM phase profile: {profile_name}")
+    phase_settings: dict[str, dict[str, Any]] = {}
+    for phase in ("dense", "hidden", "branches"):
+        settings = profile[phase]
+        if set(settings) != {
+            "enable_prefix_caching",
+            "max_num_seqs",
+            "request_batch_size",
+        }:
+            raise RuntimeError(f"invalid {profile_name}/{phase} settings")
+        max_num_seqs = int(settings["max_num_seqs"])
+        request_batch_size = int(settings["request_batch_size"])
+        if max_num_seqs not in (1, 2, 4) or not 1 <= request_batch_size <= max_num_seqs:
+            raise RuntimeError(f"unsafe {profile_name}/{phase} batch settings")
+        if phase != "branches" and bool(settings["enable_prefix_caching"]):
+            raise RuntimeError(f"prefix caching is only permitted for branches: {profile_name}")
+        phase_settings[phase] = {
+            "enable_prefix_caching": bool(settings["enable_prefix_caching"]),
+            "max_num_seqs": max_num_seqs,
+            "request_batch_size": request_batch_size,
+        }
     forbidden = [
         str(value) for value in config["reproducibility"]["forbidden_optional_packages"]
     ]
@@ -279,15 +302,15 @@ def vllm_engine_audit(config: dict[str, Any]) -> dict[str, Any]:
         "attention_backend": frozen["attention_backend"],
         "enforce_eager": bool(frozen["enforce_eager"]),
         "compilation": frozen["compilation"],
-        "enable_prefix_caching": bool(frozen["enable_prefix_caching"]),
         "enable_chunked_prefill": bool(frozen["enable_chunked_prefill"]),
         "async_scheduling": bool(frozen["async_scheduling"]),
         "max_model_len": int(frozen["max_model_len"]),
         "max_num_batched_tokens": int(frozen["max_num_batched_tokens"]),
-        "max_num_seqs": int(frozen["max_num_seqs"]),
-        "request_batch_size": int(frozen["request_batch_size"]),
         "engine_seed": int(frozen["engine_seed"]),
         "gpu_memory_utilization": float(frozen["gpu_memory_utilization"]),
+        "profile": profile_name,
+        "phases": phase_settings,
+        "branch_kv_reuse": frozen["branch"]["kv_reuse_implementation"],
         "multiprocessing": False,
         "forbidden_optional_packages_absent": forbidden,
         "requested_zero_based_decoder_layer": requested_layer,
@@ -299,6 +322,7 @@ def make_llm(
     model_path: Path,
     config: dict[str, Any],
     gpu_memory_utilization: float,
+    phase_settings: dict[str, Any],
     *,
     hidden_directory: Path | None = None,
 ):
@@ -318,8 +342,8 @@ def make_llm(
         "disable_custom_all_reduce": True,
         "max_model_len": int(frozen["max_model_len"]),
         "max_num_batched_tokens": int(frozen["max_num_batched_tokens"]),
-        "max_num_seqs": int(frozen["max_num_seqs"]),
-        "enable_prefix_caching": False,
+        "max_num_seqs": int(phase_settings["max_num_seqs"]),
+        "enable_prefix_caching": bool(phase_settings["enable_prefix_caching"]),
         "enable_chunked_prefill": bool(frozen["enable_chunked_prefill"]),
         "async_scheduling": bool(frozen["async_scheduling"]),
         "disable_log_stats": True,
@@ -412,6 +436,7 @@ def dense_pass(
     config: dict[str, Any],
     model_path: Path,
     tokenizer: Any,
+    engine_profile: dict[str, Any],
     gpu_memory_utilization: float,
     state_path_value: Path,
 ) -> None:
@@ -432,11 +457,12 @@ def dense_pass(
     state_update(state_path_value, phase="dense", phase_assigned=len(pending), phase_completed=0)
     if not pending:
         return
-    llm = make_llm(model_path, config, gpu_memory_utilization)
+    settings = engine_profile["phases"]["dense"]
+    llm = make_llm(model_path, config, gpu_memory_utilization, settings)
     assert_torch_determinism()
     generation = config["generation"]
     try:
-        batch_size = int(config["vllm"]["request_batch_size"])
+        batch_size = int(settings["request_batch_size"])
         for start in range(0, len(pending), batch_size):
             local = pending[start : start + batch_size]
             prepared = []
@@ -547,6 +573,7 @@ def hidden_pass(
     fingerprint: str,
     config: dict[str, Any],
     model_path: Path,
+    engine_profile: dict[str, Any],
     gpu_memory_utilization: float,
     state_path_value: Path,
 ) -> None:
@@ -575,13 +602,16 @@ def hidden_pass(
         model_path,
         config,
         gpu_memory_utilization,
+        engine_profile["phases"]["hidden"],
         hidden_directory=scratch,
     )
     assert_torch_determinism()
     params = SamplingParams(temperature=0.0, seed=0, max_tokens=1, detokenize=False)
     hidden_size = int(config["model"]["hidden_size"])
     try:
-        batch_size = int(config["vllm"]["request_batch_size"])
+        batch_size = int(
+            engine_profile["phases"]["hidden"]["request_batch_size"]
+        )
         for start in range(0, len(pending), batch_size):
             local = pending[start : start + batch_size]
             prepared = []
@@ -595,11 +625,13 @@ def hidden_pass(
                         f"replay exceeds max_model_len for {stage['problem_id']}: {len(replay_ids)}"
                     )
                 prepared.append((dataset, split, record, hidden_path, stage, prompt_ids, replay_ids))
+            started = time.perf_counter()
             requests = llm.generate(
                 [{"prompt_token_ids": value[6]} for value in prepared],
                 [params for _ in prepared],
                 use_tqdm=False,
             )
+            batch_wall_ms = 1000.0 * (time.perf_counter() - started)
             if len(requests) != len(prepared):
                 raise RuntimeError(f"vLLM hidden batch output mismatch: {len(requests)} != {len(prepared)}")
             for offset, (request, values) in enumerate(zip(requests, prepared), start=1):
@@ -645,6 +677,7 @@ def hidden_pass(
                     "replay_token_ids_sha256": sha256_json(replay_ids),
                     "selection_indices": indices,
                     "token_ids_exact": True,
+                    "wall_ms": batch_wall_ms / len(prepared),
                 }
                 atomic_torch_save(value, hidden_path)
                 state_update(
@@ -671,7 +704,13 @@ def hidden_pass(
         release_llm(llm)
 
 
-def branch_result(tokenizer: Any, suffix_ids: list[int], output: Any, wall_ms: float) -> dict[str, Any]:
+def branch_result(
+    tokenizer: Any,
+    suffix_ids: list[int],
+    output: Any,
+    wall_ms: float,
+    num_cached_tokens: int,
+) -> dict[str, Any]:
     tokens = [int(token) for token in output.token_ids]
     generated = tokenizer.decode(tokens, skip_special_tokens=True)
     suffix = tokenizer.decode(suffix_ids, skip_special_tokens=True)
@@ -680,6 +719,7 @@ def branch_result(tokenizer: Any, suffix_ids: list[int], output: Any, wall_ms: f
         "generated_text": generated,
         "text": suffix + generated,
         "wall_ms": wall_ms,
+        "num_cached_tokens": num_cached_tokens,
         "vllm_finish_reason": output.finish_reason,
     }
 
@@ -697,6 +737,7 @@ def finalize_pass(
     data_audit: dict[str, Any],
     reproducibility_audit: dict[str, Any],
     engine_audit: dict[str, Any],
+    task_order: str,
     gpu_memory_utilization: float,
     state_path_value: Path,
 ) -> tuple[int, int]:
@@ -722,7 +763,12 @@ def finalize_pass(
     state_update(state_path_value, phase="branches", phase_assigned=len(pending), phase_completed=0)
     if not pending:
         return 0, skipped
-    llm = make_llm(model_path, config, gpu_memory_utilization)
+    llm = make_llm(
+        model_path,
+        config,
+        gpu_memory_utilization,
+        engine_audit["phases"]["branches"],
+    )
     assert_torch_determinism()
     generation = config["generation"]
     suffix_ids = tokenizer(
@@ -781,7 +827,13 @@ def finalize_pass(
                     )
             each_wall_ms = total_wall_ms / len(requests) if requests else 0.0
             branches = [
-                branch_result(tokenizer, suffix_ids, request.outputs[0], each_wall_ms)
+                branch_result(
+                    tokenizer,
+                    suffix_ids,
+                    request.outputs[0],
+                    each_wall_ms,
+                    int(request.num_cached_tokens or 0),
+                )
                 for request in requests
             ]
             cap_branch = branches[cap_index] if cap_index is not None else None
@@ -826,6 +878,7 @@ def finalize_pass(
                         "branch_text": branch["text"],
                         "branch_generated_text": branch["generated_text"],
                         "branch_collection_wall_ms": float(branch["wall_ms"]),
+                        "branch_num_cached_tokens": int(branch["num_cached_tokens"]),
                         "forced_answer_decoding": "greedy_argmax",
                         "forced_answer_do_sample": False,
                         "prompt_tokens": len(prompt_ids),
@@ -856,6 +909,7 @@ def finalize_pass(
                 "dataset": dataset,
                 "split": split,
                 "problem_id": str(record["problem_id"]),
+                "task_order": task_order,
                 "dtype": "bfloat16",
                 "seed": int(config["seed"]),
                 "problem_seed": int(dense_stage["problem_seed"]),
@@ -905,6 +959,7 @@ def finalize_pass(
                     "gpu": physical_gpu,
                     "device": reproducibility_audit["environment"]["gpu"]["name"],
                     "branch_wall_ms": total_wall_ms,
+                    "hidden_replay_wall_ms": float(hidden_stage["wall_ms"]),
                     "created_at": utc_now(),
                 },
             }
@@ -952,6 +1007,10 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--phase", choices=("dense", "hidden", "branches"), required=True)
+    parser.add_argument("--profile", required=True)
+    parser.add_argument(
+        "--task-order", choices=("canonical", "reverse"), default="canonical"
+    )
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -983,7 +1042,7 @@ def main() -> None:
     full_environment_lock_audit = enforce_full_environment_lock(
         full_environment_lock_path
     )
-    engine_audit = vllm_engine_audit(config)
+    engine_audit = vllm_engine_audit(config, args.profile)
     code_identity = code_provenance(
         ROOT,
         (
@@ -1020,6 +1079,7 @@ def main() -> None:
                 "git_commit": code_identity["git"]["commit"],
                 "source_sha256": code_identity["source_sha256"],
                 "vllm_engine": engine_audit,
+                "task_order": args.task_order,
             },
         }
     )
@@ -1053,6 +1113,8 @@ def main() -> None:
         for index, task in enumerate(task_pool)
         if index % args.num_shards == args.shard_index
     ]
+    if args.task_order == "reverse":
+        tasks.reverse()
     if args.limit is not None:
         tasks = tasks[: args.limit]
 
@@ -1068,6 +1130,8 @@ def main() -> None:
         assigned=len(tasks),
         protocol_fingerprint=fingerprint,
         active_phase=args.phase,
+        engine_profile=args.profile,
+        task_order=args.task_order,
         phase_started_at=utc_now(),
     )
     started = time.time()
@@ -1082,6 +1146,7 @@ def main() -> None:
                 config,
                 model_path,
                 tokenizer,
+                engine_audit,
                 args.gpu_memory_utilization,
                 state_path_value,
             )
@@ -1093,6 +1158,7 @@ def main() -> None:
                 fingerprint,
                 config,
                 model_path,
+                engine_audit,
                 args.gpu_memory_utilization,
                 state_path_value,
             )
@@ -1110,6 +1176,7 @@ def main() -> None:
                 data_audit,
                 reproducibility_audit,
                 engine_audit,
+                args.task_order,
                 args.gpu_memory_utilization,
                 state_path_value,
             )
@@ -1159,6 +1226,7 @@ def main() -> None:
         "data_identity": data_audit,
         "model_audit": model_audit,
         "vllm_engine": engine_audit,
+        "task_order": args.task_order,
         "reproducibility": reproducibility_audit,
     }
     summary_path = output_root / "workers" / f"{args.worker_id}.json"

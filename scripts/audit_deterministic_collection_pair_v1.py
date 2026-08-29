@@ -38,11 +38,18 @@ def scientific_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     dense = without(dict(artifact["dense"]), {"wall_ms"})
     cap_forced_answer = dense.get("cap_forced_answer")
     if isinstance(cap_forced_answer, dict):
-        dense["cap_forced_answer"] = without(cap_forced_answer, {"wall_ms"})
+        dense["cap_forced_answer"] = without(
+            cap_forced_answer, {"wall_ms", "num_cached_tokens"}
+        )
     rows = [
         without(
             dict(row),
-            {"dense_wall_ms", "branch_collection_wall_ms", "producer_gpu"},
+            {
+                "dense_wall_ms",
+                "branch_collection_wall_ms",
+                "branch_num_cached_tokens",
+                "producer_gpu",
+            },
         )
         for row in artifact["rows"]
     ]

@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--gate-audit", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     tasks = all_tasks(args.prepared_root)
@@ -122,12 +123,21 @@ def main() -> None:
             ):
                 errors.append(f"hidden replay token/selection mismatch: {path}")
             engine = value.get("vllm_engine", {})
+            expected_phases = {
+                phase: {
+                    "enable_prefix_caching": bool(settings["enable_prefix_caching"]),
+                    "max_num_seqs": int(settings["max_num_seqs"]),
+                    "request_batch_size": int(settings["request_batch_size"]),
+                }
+                for phase, settings in config["vllm"]["profiles"][args.profile].items()
+            }
             if (
                 engine.get("version") != str(config["vllm"]["version"])
                 or engine.get("multiprocessing") is not False
                 or engine.get("async_scheduling") is not False
                 or engine.get("enforce_eager") is not True
-                or engine.get("max_num_seqs") != 1
+                or engine.get("profile") != args.profile
+                or engine.get("phases") != expected_phases
                 or engine.get("requested_zero_based_decoder_layer") != 20
                 or engine.get("vllm_aux_hidden_state_layer_ids") != [21]
                 or engine.get("forbidden_optional_packages_absent")
@@ -204,6 +214,7 @@ def main() -> None:
         "status": "complete" if not errors else "failed",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "protocol_id": config["protocol_id"],
+        "engine_profile": args.profile,
         "protocol_fingerprint": fingerprint,
         "expected_trajectories": len(expected),
         "actual_trajectories": sum(sum(value.values()) for value in counts.values()),

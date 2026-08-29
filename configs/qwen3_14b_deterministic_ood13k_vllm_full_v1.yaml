@@ -61,18 +61,37 @@ vllm:
   attention_backend_change_is_replaced_runtime_only: true
   enforce_eager: true
   compilation: disabled
-  enable_prefix_caching: false
   enable_chunked_prefill: true
   async_scheduling: false
   max_model_len: 16384
   audited_max_prompt_tokens: 1315
   audited_max_total_with_cap_suffix_and_branch: 14369
   max_num_batched_tokens: 16384
-  max_num_seqs: 1
-  request_batch_size: 1
   engine_seed: 0
-  gpu_memory_utilization: 0.47
+  gpu_memory_utilization: 0.45
+  approximate_engine_memory_gib_on_a100_80gb: 36.0
   per_request_seed: stable_seed_20260820_problem_id
+  profiles:
+    baseline_b1:
+      dense: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      hidden: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      branches: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+    branch_apc_b1:
+      dense: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      hidden: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      branches: {enable_prefix_caching: true, max_num_seqs: 1, request_batch_size: 1}
+    branch_apc_b2:
+      dense: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      hidden: {enable_prefix_caching: false, max_num_seqs: 1, request_batch_size: 1}
+      branches: {enable_prefix_caching: true, max_num_seqs: 2, request_batch_size: 2}
+    full_apc_b2:
+      dense: {enable_prefix_caching: false, max_num_seqs: 2, request_batch_size: 2}
+      hidden: {enable_prefix_caching: false, max_num_seqs: 2, request_batch_size: 2}
+      branches: {enable_prefix_caching: true, max_num_seqs: 2, request_batch_size: 2}
+    full_apc_b4:
+      dense: {enable_prefix_caching: false, max_num_seqs: 4, request_batch_size: 4}
+      hidden: {enable_prefix_caching: false, max_num_seqs: 4, request_batch_size: 4}
+      branches: {enable_prefix_caching: true, max_num_seqs: 4, request_batch_size: 4}
   hidden_extractor:
     method: extract_hidden_states
     connector: ExampleHiddenStatesConnector
@@ -84,9 +103,19 @@ vllm:
     output_dtype: float16
     process_isolation: dedicated_fresh_python_process
   branch:
-    prefix_caching: false
+    kv_reuse_implementation: vllm_automatic_prefix_caching_full_blocks
+    public_arbitrary_checkpoint_kv_fork_api: unavailable_in_vllm_0_18_1
     greedy_temperature: 0.0
     max_tokens: 48
+vllm_risk_gate:
+  candidate_profiles: [baseline_b1, branch_apc_b1, branch_apc_b2, full_apc_b2]
+  batch4_policy: test_only_if_b2_exact_and_materially_unsaturated
+  same_gpu_repeat_exact_required: true
+  cross_gpu_exact_required: true
+  batch_composition_token_exact_required: true
+  batch_composition_hidden_exact_required: true
+  minimum_material_speedup: 1.20
+  preferred_max_batch_for_a100_40gb: 2
 probe:
   shared_architecture: [5126, 384, 96, 1]
   optimizer: AdamW

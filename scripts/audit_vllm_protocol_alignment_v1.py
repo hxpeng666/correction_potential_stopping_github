@@ -82,7 +82,13 @@ def main() -> None:
             "vllm_single_process": engine.get("multiprocessing") is False,
             "vllm_sync_scheduler": engine.get("async_scheduling") is False,
             "vllm_eager_no_cudagraph": engine.get("enforce_eager") is True,
-            "vllm_single_sequence": engine.get("max_num_seqs") == 1,
+            "vllm_profile_declared": isinstance(engine.get("profile"), str),
+            "vllm_phase_settings_declared": set(engine.get("phases", {}))
+            == {"dense", "hidden", "branches"},
+            "vllm_small_batch_for_40gb": all(
+                int(settings.get("max_num_seqs", 999)) <= 2
+                for settings in engine.get("phases", {}).values()
+            ),
             "vllm_layer20_aux_mapping": (
                 engine.get("requested_zero_based_decoder_layer") == 20
                 and engine.get("vllm_aux_hidden_state_layer_ids") == [21]

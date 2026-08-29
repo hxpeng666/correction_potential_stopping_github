@@ -19,9 +19,9 @@ sys.path.insert(0, str(ROOT))
 from src.reproducibility import code_provenance, deterministic_subprocess_environment, sha256_json
 
 FORMAL_WORKERS = (
-    (0, 0.47, "formal_gpu0_replica0", 0, 3),
-    (1, 0.47, "formal_gpu1_replica0", 1, 3),
-    (1, 0.47, "formal_gpu1_replica1", 2, 3),
+    (0, 0.45, "formal_gpu0_replica0", 0, 3),
+    (1, 0.45, "formal_gpu1_replica0", 1, 3),
+    (1, 0.45, "formal_gpu1_replica1", 2, 3),
 )
 
 
@@ -71,8 +71,10 @@ def collector_command(
     worker: str,
     shard: int,
     num_shards: int,
+    profile: str,
     *,
     problem_ids: list[str] | None = None,
+    task_order: str = "canonical",
 ) -> list[str]:
     value = [
         str(python),
@@ -95,6 +97,10 @@ def collector_command(
         str(shard),
         "--num-shards",
         str(num_shards),
+        "--profile",
+        profile,
+        "--task-order",
+        task_order,
         "--resume",
     ]
     for problem_id in problem_ids or []:
@@ -136,6 +142,7 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--transformers-reference-artifact", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -164,6 +171,7 @@ def main() -> None:
             args.transformers_reference_artifact.resolve()
         ),
         "git_commit": identity["git"]["commit"],
+        "profile": args.profile,
     }
     invocation_fingerprint = sha256_json(invocation)
     manifest_path = output / "RUN_MANIFEST.json"
@@ -212,10 +220,11 @@ def main() -> None:
             args.model_path,
             gate_root,
             physical_gpu,
-            0.47,
+            0.45,
             f"gate_{name}",
             0,
             1,
+            args.profile,
             problem_ids=gate_problem_ids,
         )
         code = run_logged(
@@ -330,6 +339,7 @@ def main() -> None:
             worker,
             shard,
             total,
+            args.profile,
         )
         log = output / "logs" / f"{worker}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -369,6 +379,8 @@ def main() -> None:
         str(output),
         "--gate-audit",
         str(output / "DETERMINISM_GATE.json"),
+        "--profile",
+        args.profile,
     ]
     if run_logged(
         collection_audit,
