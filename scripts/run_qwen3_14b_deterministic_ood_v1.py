@@ -32,6 +32,13 @@ def atomic_json(value: Any, path: Path) -> None:
     os.replace(temporary, path)
 
 
+def atomic_text(value: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def command(
     python: Path,
     config: Path,
@@ -108,6 +115,7 @@ def main() -> None:
         if previous.get("invocation_fingerprint") != invocation_fingerprint:
             raise RuntimeError("refusing to reuse output root for a different invocation")
     output.mkdir(parents=True, exist_ok=True)
+    atomic_text(f"{os.getpid()}\n", output / "supervisor.pid")
     state = {
         "status": "determinism_gate",
         "started_at": datetime.now(timezone.utc).isoformat(),
