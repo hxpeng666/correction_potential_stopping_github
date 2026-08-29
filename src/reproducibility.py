@@ -168,6 +168,7 @@ def environment_provenance(device: torch.device | None = None) -> dict[str, Any]
         "huggingface-hub",
         "safetensors",
         "tokenizers",
+        "vllm",
     ):
         try:
             packages[name] = importlib.metadata.version(name)
@@ -191,16 +192,31 @@ def environment_provenance(device: torch.device | None = None) -> dict[str, Any]
             "compute_capability": [properties.major, properties.minor],
         }
         try:
-            line = subprocess.check_output(
+            property_uuid = getattr(properties, "uuid", None)
+            if property_uuid is None:
+                uuid = None
+            else:
+                raw_uuid = str(property_uuid)
+                uuid = raw_uuid if raw_uuid.startswith("GPU-") else f"GPU-{raw_uuid}"
+            driver = subprocess.check_output(
                 [
                     "nvidia-smi",
-                    f"--id={index}",
-                    "--query-gpu=uuid,driver_version",
+                    "--query-gpu=driver_version",
                     "--format=csv,noheader,nounits",
                 ],
                 text=True,
-            ).strip().splitlines()[0]
-            uuid, driver = [part.strip() for part in line.split(",", 1)]
+            ).strip().splitlines()[0].strip()
+            if uuid is None:
+                line = subprocess.check_output(
+                    [
+                        "nvidia-smi",
+                        f"--id={index}",
+                        "--query-gpu=uuid",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    text=True,
+                ).strip().splitlines()[0]
+                uuid = line.strip()
             result["gpu"].update({"uuid": uuid, "driver": driver})
         except (OSError, subprocess.CalledProcessError, IndexError, ValueError):
             result["gpu"].update({"uuid": None, "driver": None})

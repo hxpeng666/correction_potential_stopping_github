@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed completeness audit for the Qwen3-14B deterministic collection."""
+"""Fail-closed completeness audit for the full-vLLM Qwen3-14B collection."""
 from __future__ import annotations
 
 import argparse
@@ -17,9 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from collect_qwen3_14b_deterministic_ood_v1 import DATA_LAYOUT, all_tasks, gold_for
+from collect_qwen3_14b_vllm_full_v1 import DATA_LAYOUT, all_tasks, gold_for
 from deepseek7b_protocol_v1 import stable_seed, success
-from src.reproducibility import code_provenance, sha256_file
+from src.reproducibility import code_provenance, sha256_file, sha256_json
 
 
 def atomic_json(value: Any, path: Path) -> None:
@@ -90,11 +90,61 @@ def main() -> None:
                 errors.append(f"fingerprint mismatch: {path}")
             rows = list(value.get("rows", []))
             hidden = value.get("hidden")
+            schedule = [int(item) for item in value.get("schedule_checkpoints", [])]
             checkpoints += len(rows)
-            if not isinstance(hidden, torch.Tensor) or list(hidden.shape) != [len(rows), 1, 5120]:
+            if (
+                not isinstance(hidden, torch.Tensor)
+                or hidden.dtype != torch.float16
+                or list(hidden.shape) != [len(rows), 1, 5120]
+            ):
                 errors.append(f"hidden shape mismatch: {path}")
+            if schedule != [int(row.get("checkpoint", -1)) for row in rows]:
+                errors.append(f"checkpoint sequence mismatch: {path}")
             if value.get("capture_layers") != [20] or value.get("actual_checkpoint_schedule") != "paragraph":
                 errors.append(f"checkpoint/layer mismatch: {path}")
+            hidden_replay = value.get("hidden_replay_audit", {})
+            expected_replay_tokens = len(prompt_token_ids or []) + len(
+                value.get("dense", {}).get("tokens", [])
+            )
+            expected_selection = [
+                len(prompt_token_ids or []) + checkpoint - 1
+                for checkpoint in schedule
+            ]
+            if (
+                hidden_replay.get("token_ids_exact") is not True
+                or hidden_replay.get("replay_token_count") != expected_replay_tokens
+                or hidden_replay.get("replay_token_ids_sha256")
+                != sha256_json(
+                    list(prompt_token_ids or [])
+                    + list(value.get("dense", {}).get("tokens", []))
+                )
+                or hidden_replay.get("selection_indices") != expected_selection
+            ):
+                errors.append(f"hidden replay token/selection mismatch: {path}")
+            engine = value.get("vllm_engine", {})
+            if (
+                engine.get("version") != str(config["vllm"]["version"])
+                or engine.get("multiprocessing") is not False
+                or engine.get("async_scheduling") is not False
+                or engine.get("enforce_eager") is not True
+                or engine.get("max_num_seqs") != 1
+                or engine.get("requested_zero_based_decoder_layer") != 20
+                or engine.get("vllm_aux_hidden_state_layer_ids") != [21]
+                or engine.get("forbidden_optional_packages_absent")
+                != ["flash-attn", "xformers"]
+            ):
+                errors.append(f"vLLM deterministic engine mismatch: {path}")
+            environment_lock = value.get("reproducibility", {}).get(
+                "full_environment_lock", {}
+            )
+            if (
+                environment_lock.get("exact") is not True
+                or environment_lock.get("sha256")
+                != sha256_file(
+                    ROOT / config["reproducibility"]["full_environment_lock"]
+                )
+            ):
+                errors.append(f"full environment lock mismatch: {path}")
             dense = value.get("dense", {})
             reached = bool(dense.get("reached_max_tokens"))
             if reached:
@@ -141,7 +191,7 @@ def main() -> None:
             errors.append(f"failed worker summary: {name}")
     if workers:
         worker_shards = {
-            (int(value.get("gpu", -1)), int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
+            (int(value.get("physical_gpu", -1)), int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
             for value in workers
         }
         expected_shards = {(0, 0, 3), (1, 1, 3), (1, 2, 3)}
@@ -163,7 +213,7 @@ def main() -> None:
         "cap_hit_trajectories": capped,
         "workers": [
             {key: value.get(key) for key in (
-                "worker", "gpu", "shard_index", "num_shards", "assigned",
+                "worker", "physical_gpu", "shard_index", "num_shards", "assigned",
                 "completed", "skipped", "failures",
             )}
             for value in workers
@@ -174,7 +224,7 @@ def main() -> None:
             ROOT,
             (
                 "scripts/audit_qwen3_14b_deterministic_ood_v1.py",
-                "scripts/collect_qwen3_14b_deterministic_ood_v1.py",
+                "scripts/collect_qwen3_14b_vllm_full_v1.py",
             ),
         ),
     }

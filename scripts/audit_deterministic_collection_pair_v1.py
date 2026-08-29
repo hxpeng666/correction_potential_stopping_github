@@ -55,6 +55,9 @@ def scientific_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     )
     runtime_environment["gpu"] = gpu
     runtime_lock = without(dict(reproducibility["runtime_lock"]), {"path"})
+    full_environment_lock = without(
+        dict(reproducibility["full_environment_lock"]), {"path"}
+    )
     return {
         "schema_version": artifact["schema_version"],
         "status": artifact["status"],
@@ -77,15 +80,20 @@ def scientific_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         "gold_answer": artifact["gold_answer"],
         "prompt_text": artifact["prompt_text"],
         "prompt_tokens": artifact["prompt_tokens"],
+        "prompt_token_ids": artifact["prompt_token_ids"],
         "dense": dense,
         "dense_generation": artifact["dense_generation"],
         "forced_answer_decoding": artifact["forced_answer_decoding"],
         "trajectory": artifact["trajectory"],
         "schedule_checkpoints": artifact["schedule_checkpoints"],
         "model_audit": model_audit,
+        "vllm_engine": artifact.get("vllm_engine"),
+        "hidden_replay_audit": artifact.get("hidden_replay_audit"),
         "reproducibility": {
             "settings": reproducibility["settings"],
+            "vllm_environment": reproducibility.get("vllm_environment"),
             "runtime_lock": runtime_lock,
+            "full_environment_lock": full_environment_lock,
             "environment": runtime_environment,
             "code": reproducibility["code"],
         },
@@ -97,18 +105,26 @@ def main() -> None:
     parser.add_argument("--left", type=Path, required=True)
     parser.add_argument("--right", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--gpu-mode", choices=("same", "distinct"), default="distinct"
+    )
     args = parser.parse_args()
 
     left = torch.load(args.left, map_location="cpu", weights_only=False)
     right = torch.load(args.right, map_location="cpu", weights_only=False)
     left_payload = scientific_payload(left)
     right_payload = scientific_payload(right)
+    left_uuid = left["reproducibility"]["environment"]["gpu"]["uuid"]
+    right_uuid = right["reproducibility"]["environment"]["gpu"]["uuid"]
     checks = {
         "same_scientific_payload": left_payload == right_payload,
         "hidden_tensor_exact": bool(torch.equal(left["hidden"], right["hidden"])),
-        "distinct_certified_gpu_uuid": (
-            left["reproducibility"]["environment"]["gpu"]["uuid"]
-            != right["reproducibility"]["environment"]["gpu"]["uuid"]
+        f"{args.gpu_mode}_certified_gpu_uuid": (
+            left_uuid == right_uuid if args.gpu_mode == "same" else left_uuid != right_uuid
+        ),
+        "hidden_replay_token_ids_exact": bool(
+            left.get("hidden_replay_audit", {}).get("token_ids_exact")
+            and right.get("hidden_replay_audit", {}).get("token_ids_exact")
         ),
     }
     payload = {
@@ -128,8 +144,9 @@ def main() -> None:
             else 0.0,
         },
         "gpu_uuid": {
-            "left": left["reproducibility"]["environment"]["gpu"]["uuid"],
-            "right": right["reproducibility"]["environment"]["gpu"]["uuid"],
+            "left": left_uuid,
+            "right": right_uuid,
+            "mode": args.gpu_mode,
         },
         "artifacts": {"left": str(args.left.resolve()), "right": str(args.right.resolve())},
         "audit_code_identity": code_provenance(
