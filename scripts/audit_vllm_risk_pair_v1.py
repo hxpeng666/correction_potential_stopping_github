@@ -90,6 +90,12 @@ def main() -> None:
     right = torch.load(args.right, map_location="cpu", weights_only=False, mmap=True)
     left_rows = normalized_rows(left)
     right_rows = normalized_rows(right)
+    left_hidden_shape = tuple(left["hidden"].shape)
+    right_hidden_shape = tuple(right["hidden"].shape)
+    hidden_shape_exact = left_hidden_shape == right_hidden_shape
+    hidden_tensor_bitwise_exact = bool(
+        hidden_shape_exact and torch.equal(left["hidden"], right["hidden"])
+    )
     checks = {
         "problem_identity_exact": (
             left.get("dataset"), left.get("split"), left.get("problem_id")
@@ -105,21 +111,37 @@ def main() -> None:
         == right.get("schedule_checkpoints"),
         "branch_and_row_payload_exact": left_rows == right_rows,
         "labels_exact": labels(left_rows) == labels(right_rows),
-        "hidden_shape_exact": tuple(left["hidden"].shape)
-        == tuple(right["hidden"].shape),
-        "hidden_tensor_bitwise_exact": bool(torch.equal(left["hidden"], right["hidden"])),
+        "hidden_shape_exact": hidden_shape_exact,
+        "hidden_tensor_bitwise_exact": hidden_tensor_bitwise_exact,
     }
     left_metrics = metrics(left)
     right_metrics = metrics(right)
-    difference = (left["hidden"].float() - right["hidden"].float()).abs()
+    difference = (
+        (left["hidden"].float() - right["hidden"].float()).abs()
+        if hidden_shape_exact
+        else None
+    )
     payload = {
         "status": "complete",
         "all_scientific_exact": bool(all(checks.values())),
         "checks": checks,
         "hidden": {
-            "max_abs_difference": float(difference.max()) if difference.numel() else 0.0,
-            "changed_elements": int(torch.count_nonzero(difference)),
-            "elements": int(difference.numel()),
+            "left_shape": list(left_hidden_shape),
+            "right_shape": list(right_hidden_shape),
+            "max_abs_difference": (
+                (
+                    float(difference.max())
+                    if difference is not None and difference.numel()
+                    else 0.0
+                )
+                if hidden_shape_exact
+                else None
+            ),
+            "changed_elements": (
+                int(torch.count_nonzero(difference)) if difference is not None else None
+            ),
+            "left_elements": int(left["hidden"].numel()),
+            "right_elements": int(right["hidden"].numel()),
         },
         "metrics": {"left": left_metrics, "right": right_metrics},
         "right_vs_left_speedup": {

@@ -16,6 +16,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+SELF_REPRODUCIBILITY_POLICY = "same_profile_same_and_cross_gpu_exact_v1"
+
 from src.reproducibility import (
     code_provenance,
     deterministic_subprocess_environment,
@@ -139,6 +141,33 @@ def gate_artifact(root: Path, problem: dict[str, Any]) -> Path:
     )
 
 
+def validate_risk_gate(
+    config: dict[str, Any], risk_gate: dict[str, Any], profile: str
+) -> dict[str, Any]:
+    profile_result = risk_gate.get("results", {}).get(profile, {})
+    expected_gate_problem_ids = {
+        str(value["problem_id"]) for value in config["determinism_gate"]["problems"]
+    }
+    same_gpu_exact = profile_result.get("same_gpu_exact", {})
+    cross_gpu_exact = profile_result.get("cross_gpu_exact", {})
+    if (
+        risk_gate.get("status") != "complete"
+        or profile not in risk_gate.get("accepted_profiles", [])
+        or risk_gate.get("recommended_profile") != profile
+        or risk_gate.get("acceptance_policy", {}).get("name")
+        != SELF_REPRODUCIBILITY_POLICY
+        or profile_result.get("self_reproducibility_accepted") is not True
+        or set(same_gpu_exact) != expected_gate_problem_ids
+        or not all(same_gpu_exact.values())
+        or set(cross_gpu_exact) != expected_gate_problem_ids
+        or not all(cross_gpu_exact.values())
+    ):
+        raise RuntimeError(
+            f"profile {profile} is not the completed self-reproducible risk-matrix recommendation"
+        )
+    return profile_result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -153,14 +182,7 @@ def main() -> None:
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     risk_gate = json.loads(args.risk_gate_audit.read_text(encoding="utf-8"))
-    if (
-        risk_gate.get("status") != "complete"
-        or args.profile not in risk_gate.get("accepted_profiles", [])
-        or risk_gate.get("recommended_profile") != args.profile
-    ):
-        raise RuntimeError(
-            f"profile {args.profile} is not the completed risk-matrix recommendation"
-        )
+    profile_result = validate_risk_gate(config, risk_gate, args.profile)
     output = args.output_root.resolve()
     identity = code_provenance(
         ROOT,
@@ -209,6 +231,8 @@ def main() -> None:
             "sha256": sha256_file(args.risk_gate_audit),
             "recommended_profile": risk_gate["recommended_profile"],
             "accepted_profiles": risk_gate["accepted_profiles"],
+            "acceptance_policy": risk_gate["acceptance_policy"],
+            "baseline_equivalent": profile_result.get("baseline_equivalent"),
         },
         "formal_workers": [
             {

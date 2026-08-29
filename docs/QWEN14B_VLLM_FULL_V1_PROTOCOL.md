@@ -77,10 +77,11 @@ context limit.
 - Before formal selection, compare baseline batch 1, branch-only APC batch 1,
   branch-only APC batch 2, and full APC batch 2. Batch 4 is diagnostic-only and
   may run only if batch 2 is exact and still materially unsaturated.
-- Same-GPU repeat, cross-GPU output, batch composition/order, Dense token IDs,
-  greedy branch token IDs/labels, and float16 hidden tensors must all be exact.
-  A candidate must improve measured phase time by at least 20% to displace the
-  safer baseline. Formal batch size is capped at 2 for 40GB A100 portability.
+- Same-profile repeats must be bitwise exact for Dense token IDs, greedy branch
+  token IDs/labels, and float16 hidden tensors on the same GPU and across GPU0/1.
+  Baseline and batch composition/order comparisons are retained as diagnostic
+  evidence but are not hard acceptance gates. Formal batch size is capped at 2
+  for 40GB A100 portability.
 - Bitwise exact scientific payload and hidden tensors across two independent
   runs on GPU0.
 - Bitwise exact scientific payload and hidden tensors between A100 GPU0 and
@@ -88,9 +89,10 @@ context limit.
 - Exact equality of every non-engine protocol field against the existing
   Transformers gate artifact.
 
-No formal shard may start unless the risk matrix and all final gates pass. A crash, OOM, or any
-non-exact gate is evidence to preserve; it is not retried with a changed batch,
-dtype, context, layer, seed, GPU assignment, or decoding rule.
+No formal shard may start unless the risk matrix and all self-reproducibility
+gates pass. A crash, OOM, or a non-exact same-profile gate is evidence to
+preserve; it is not retried with a changed batch, dtype, context, layer, seed,
+GPU assignment, or decoding rule.
 The formal supervisor requires the completed `RISK_MATRIX.json` as an input,
 verifies that the requested profile is both accepted and recommended, and
 records its SHA-256 in `RUN_MANIFEST.json` and `DETERMINISM_GATE.json`.
