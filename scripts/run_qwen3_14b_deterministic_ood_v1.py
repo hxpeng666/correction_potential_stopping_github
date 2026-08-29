@@ -122,6 +122,7 @@ def main() -> None:
             gate_root, gpu, f"gate_gpu{gpu}", 0, 1, problem_id=gate_problem,
         )
         log = output / "logs" / f"gate_gpu{gpu}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
         handle = log.open("a", encoding="utf-8")
         handle.write("COMMAND " + json.dumps(gate_command) + "\n")
         handle.flush()
@@ -161,6 +162,7 @@ def main() -> None:
             output, gpu, worker, gpu, 2,
         )
         log = output / "logs" / f"{worker}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
         handle = log.open("a", encoding="utf-8")
         handle.write("COMMAND " + json.dumps(formal_command) + "\n")
         handle.flush()
