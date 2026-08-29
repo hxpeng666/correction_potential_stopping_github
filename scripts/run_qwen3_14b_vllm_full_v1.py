@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,13 +25,6 @@ from src.reproducibility import (
     sha256_file,
     sha256_json,
 )
-
-FORMAL_WORKERS = (
-    (0, 0.45, "formal_gpu0_replica0", 0, 3),
-    (1, 0.45, "formal_gpu1_replica0", 1, 3),
-    (1, 0.45, "formal_gpu1_replica1", 2, 3),
-)
-
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -141,6 +135,130 @@ def gate_artifact(root: Path, problem: dict[str, Any]) -> Path:
     )
 
 
+def process_belongs_to_roots(pid: int, roots: set[int]) -> bool:
+    """Return whether pid is one of roots or a live descendant of one."""
+    seen: set[int] = set()
+    current = pid
+    while current > 1 and current not in seen:
+        if current in roots:
+            return True
+        seen.add(current)
+        status = Path(f"/proc/{current}/status")
+        try:
+            parent_line = next(
+                line for line in status.read_text(encoding="utf-8").splitlines()
+                if line.startswith("PPid:")
+            )
+            current = int(parent_line.split()[1])
+        except (FileNotFoundError, PermissionError, StopIteration, ValueError):
+            return False
+    return current in roots
+
+
+def worker_capacity(
+    total_mib: int,
+    external_used_mib: int,
+    required_slot_mib: int,
+    maximum: int,
+) -> int:
+    if min(total_mib, external_used_mib, required_slot_mib, maximum) < 0:
+        raise ValueError("GPU capacity values must be non-negative")
+    if required_slot_mib == 0:
+        raise ValueError("required_slot_mib must be positive")
+    return max(0, min(maximum, (total_mib - external_used_mib) // required_slot_mib))
+
+
+def gpu_resource_snapshot(
+    physical_gpus: list[int],
+    active_worker_roots: set[int],
+    required_slot_mib: int,
+    maximum_workers_per_gpu: int,
+) -> dict[int, dict[str, Any]]:
+    gpu_output = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,uuid,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    snapshot: dict[int, dict[str, Any]] = {}
+    uuid_to_gpu: dict[str, int] = {}
+    for line in gpu_output.splitlines():
+        index_text, uuid, total_text, free_text = [item.strip() for item in line.split(",")]
+        gpu = int(index_text)
+        if gpu not in physical_gpus:
+            continue
+        snapshot[gpu] = {
+            "total_mib": int(total_text),
+            "free_mib": int(free_text),
+            "external_processes": [],
+            "task_processes": [],
+        }
+        uuid_to_gpu[uuid] = gpu
+    app_output = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-compute-apps=gpu_uuid,pid,used_memory,process_name",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    for line in app_output.splitlines():
+        uuid, pid_text, used_text, process_name = [
+            item.strip() for item in line.split(",", 3)
+        ]
+        gpu = uuid_to_gpu.get(uuid)
+        if gpu is None:
+            continue
+        process = {
+            "pid": int(pid_text),
+            "used_memory_mib": int(used_text),
+            "process_name": process_name,
+        }
+        key = (
+            "task_processes"
+            if process_belongs_to_roots(int(pid_text), active_worker_roots)
+            else "external_processes"
+        )
+        snapshot[gpu][key].append(process)
+    for value in snapshot.values():
+        external_used = sum(
+            int(process["used_memory_mib"])
+            for process in value["external_processes"]
+        )
+        value["external_used_mib"] = external_used
+        value["worker_capacity"] = worker_capacity(
+            int(value["total_mib"]),
+            external_used,
+            required_slot_mib,
+            maximum_workers_per_gpu,
+        )
+    if set(snapshot) != set(physical_gpus):
+        raise RuntimeError(f"missing requested GPU telemetry: {snapshot.keys()}")
+    return snapshot
+
+
+def scheduler_settings(config: dict[str, Any]) -> dict[str, Any]:
+    settings = dict(config["formal_scheduler"])
+    physical_gpus = [int(value) for value in settings["physical_gpus"]]
+    if physical_gpus != [0, 1]:
+        raise RuntimeError(f"formal physical GPUs must remain [0, 1]: {physical_gpus}")
+    if int(settings["num_shards"]) != 4:
+        raise RuntimeError("dynamic formal scheduler requires exactly four logical shards")
+    if int(settings["max_workers_per_gpu"]) != 2:
+        raise RuntimeError("dynamic formal scheduler requires a two-worker per-GPU cap")
+    if int(settings["required_memory_mib_per_worker_slot"]) < 40960:
+        raise RuntimeError("worker slot reservation must be at least 40960 MiB")
+    if float(settings["worker_gpu_memory_utilization"]) != 0.45:
+        raise RuntimeError("formal worker memory utilization must remain 0.45")
+    return settings
+
+
 def validate_risk_gate(
     config: dict[str, Any], risk_gate: dict[str, Any], profile: str
 ) -> dict[str, Any]:
@@ -181,6 +299,7 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    scheduler = scheduler_settings(config)
     risk_gate = json.loads(args.risk_gate_audit.read_text(encoding="utf-8"))
     profile_result = validate_risk_gate(config, risk_gate, args.profile)
     output = args.output_root.resolve()
@@ -211,6 +330,7 @@ def main() -> None:
         "profile": args.profile,
         "risk_gate_audit": str(args.risk_gate_audit.resolve()),
         "risk_gate_audit_sha256": sha256_file(args.risk_gate_audit),
+        "formal_scheduler": scheduler,
     }
     invocation_fingerprint = sha256_json(invocation)
     manifest_path = output / "RUN_MANIFEST.json"
@@ -236,14 +356,22 @@ def main() -> None:
         },
         "formal_workers": [
             {
-                "physical_gpu": gpu,
-                "gpu_memory_utilization": memory,
-                "worker": worker,
+                "physical_gpu": None,
+                "gpu_memory_utilization": float(
+                    scheduler["worker_gpu_memory_utilization"]
+                ),
+                "worker": f"formal_shard{shard}",
                 "shard_index": shard,
-                "num_shards": total,
+                "num_shards": int(scheduler["num_shards"]),
+                "status": "pending",
             }
-            for gpu, memory, worker, shard, total in FORMAL_WORKERS
+            for shard in range(int(scheduler["num_shards"]))
         ],
+        "scheduler": {
+            "settings": scheduler,
+            "last_gpu_snapshot": None,
+            "poll_count": 0,
+        },
         "stages": [],
     }
     atomic_json(state, manifest_path)
@@ -259,6 +387,24 @@ def main() -> None:
         (1, "cross_gpu1"),
     )
     for physical_gpu, name in gate_specs:
+        while True:
+            snapshot = gpu_resource_snapshot(
+                [physical_gpu],
+                set(),
+                int(scheduler["required_memory_mib_per_worker_slot"]),
+                1,
+            )
+            state["scheduler"]["last_gpu_snapshot"] = snapshot
+            state["scheduler"]["poll_count"] += 1
+            if int(snapshot[physical_gpu]["worker_capacity"]) >= 1:
+                state["status"] = "determinism_gate"
+                atomic_json(state, manifest_path)
+                break
+            state["status"] = "determinism_gate_waiting_for_gpu_memory"
+            state["waiting_gate"] = name
+            atomic_json(state, manifest_path)
+            time.sleep(int(scheduler["poll_seconds"]))
+        state.pop("waiting_gate", None)
         gate_root = output / "determinism_gate" / name
         command = collector_command(
             args.python,
@@ -375,45 +521,101 @@ def main() -> None:
     state["status"] = "collecting"
     atomic_json(state, manifest_path)
 
-    formal_processes = []
-    for gpu, memory, worker, shard, total in FORMAL_WORKERS:
-        command = collector_command(
-            args.python,
-            args.config,
-            args.prepared_root,
-            args.model_path,
-            output,
-            gpu,
-            memory,
-            worker,
-            shard,
-            total,
-            args.profile,
+    pending = list(range(int(scheduler["num_shards"])))
+    active: dict[int, tuple[subprocess.Popen, Any, int]] = {}
+    failed = False
+    physical_gpus = [int(value) for value in scheduler["physical_gpus"]]
+    worker_records = {
+        int(value["shard_index"]): value for value in state["formal_workers"]
+    }
+    while pending or active:
+        for shard, (process, handle, gpu) in list(active.items()):
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            handle.close()
+            del active[shard]
+            record = worker_records[shard]
+            record["returncode"] = returncode
+            record["completed_at"] = utc_now()
+            record["status"] = "complete" if returncode == 0 else "failed"
+            if returncode != 0:
+                failed = True
+                state.update(
+                    {
+                        "status": "failed",
+                        "stage": "collection",
+                        "failed_worker": record["worker"],
+                        "returncode": returncode,
+                    }
+                )
+        roots = {process.pid for process, _, _ in active.values()}
+        snapshot = gpu_resource_snapshot(
+            physical_gpus,
+            roots,
+            int(scheduler["required_memory_mib_per_worker_slot"]),
+            int(scheduler["max_workers_per_gpu"]),
         )
-        log = output / "logs" / f"{worker}.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        handle = log.open("a", encoding="utf-8")
-        handle.write("COMMAND " + json.dumps(command) + "\n")
-        handle.flush()
-        process = subprocess.Popen(
-            command,
-            cwd=ROOT,
-            env=deterministic_environment(config, gpu),
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-        )
-        formal_processes.append((process, handle))
-    returncodes = []
-    for process, handle in formal_processes:
-        returncodes.append(process.wait())
-        handle.close()
-    if returncodes != [0] * len(FORMAL_WORKERS):
-        state.update(
-            {"status": "failed", "stage": "collection", "returncodes": returncodes}
-        )
+        active_per_gpu = {
+            gpu: sum(1 for _, _, local_gpu in active.values() if local_gpu == gpu)
+            for gpu in physical_gpus
+        }
+        state["scheduler"]["last_gpu_snapshot"] = snapshot
+        state["scheduler"]["poll_count"] += 1
+        if not failed and pending:
+            launched = True
+            while pending and launched:
+                launched = False
+                for gpu in sorted(physical_gpus, key=lambda item: (active_per_gpu[item], item)):
+                    if not pending or active_per_gpu[gpu] >= int(
+                        snapshot[gpu]["worker_capacity"]
+                    ):
+                        continue
+                    shard = pending.pop(0)
+                    worker = f"formal_shard{shard}"
+                    command = collector_command(
+                        args.python,
+                        args.config,
+                        args.prepared_root,
+                        args.model_path,
+                        output,
+                        gpu,
+                        float(scheduler["worker_gpu_memory_utilization"]),
+                        worker,
+                        shard,
+                        int(scheduler["num_shards"]),
+                        args.profile,
+                    )
+                    log = output / "logs" / f"{worker}.log"
+                    log.parent.mkdir(parents=True, exist_ok=True)
+                    handle = log.open("a", encoding="utf-8")
+                    handle.write("COMMAND " + json.dumps(command) + "\n")
+                    handle.flush()
+                    process = subprocess.Popen(
+                        command,
+                        cwd=ROOT,
+                        env=deterministic_environment(config, gpu),
+                        stdout=handle,
+                        stderr=subprocess.STDOUT,
+                    )
+                    active[shard] = (process, handle, gpu)
+                    active_per_gpu[gpu] += 1
+                    record = worker_records[shard]
+                    record.update(
+                        {
+                            "physical_gpu": gpu,
+                            "pid": process.pid,
+                            "status": "running",
+                            "started_at": utc_now(),
+                        }
+                    )
+                    launched = True
         atomic_json(state, manifest_path)
-        raise SystemExit(2)
-    state["stages"].append("two_gpu_collection")
+        if failed and not active:
+            raise SystemExit(2)
+        if pending or active:
+            time.sleep(int(scheduler["poll_seconds"]))
+    state["stages"].append("adaptive_two_gpu_collection")
     state["status"] = "auditing"
     atomic_json(state, manifest_path)
 

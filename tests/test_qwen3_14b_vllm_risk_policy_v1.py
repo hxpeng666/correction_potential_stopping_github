@@ -3,6 +3,7 @@ import pytest
 from scripts.run_qwen3_14b_vllm_full_v1 import (
     SELF_REPRODUCIBILITY_POLICY,
     validate_risk_gate,
+    worker_capacity,
 )
 
 
@@ -46,3 +47,9 @@ def test_incomplete_problem_coverage_fails_closed():
     del report["results"]["full_apc_b2"]["cross_gpu_exact"]["gsm"]
     with pytest.raises(RuntimeError):
         validate_risk_gate(config, report, "full_apc_b2")
+
+
+def test_worker_capacity_reserves_40gib_per_replica():
+    assert worker_capacity(81920, 22948, 40960, 2) == 1
+    assert worker_capacity(81920, 14798, 40960, 2) == 1
+    assert worker_capacity(81920, 0, 40960, 2) == 2

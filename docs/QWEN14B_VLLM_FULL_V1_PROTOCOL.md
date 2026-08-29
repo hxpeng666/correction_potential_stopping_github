@@ -89,6 +89,18 @@ context limit.
 - Exact equality of every non-engine protocol field against the existing
   Transformers gate artifact.
 
+## Adaptive formal scheduling
+
+Formal collection uses four fixed logical shards (`0/4` through `3/4`). Their
+problem membership and in-shard request order never change. A 15-second
+supervisor loop reads GPU0/GPU1 memory telemetry and places pending shards on
+either A100 without touching external processes. Each active worker reserves a
+40,960 MiB scheduling slot, keeps `gpu_memory_utilization=0.45`, and each GPU is
+capped at two workers. GPU process ancestry separates this task's memory from
+external memory, so a second replica is launched only when the remaining
+external allocation still leaves another complete 40 GiB slot. Cross-GPU exact
+gates justify moving a fixed logical shard between GPU0 and GPU1.
+
 No formal shard may start unless the risk matrix and all self-reproducibility
 gates pass. A crash, OOM, or a non-exact same-profile gate is evidence to
 preserve; it is not retried with a changed batch, dtype, context, layer, seed,

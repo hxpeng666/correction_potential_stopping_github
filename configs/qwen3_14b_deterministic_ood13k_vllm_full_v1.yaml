@@ -154,4 +154,12 @@ determinism_gate:
   require_prompt_ids_equal_to_transformers_reference: true
   require_seed_derivation_equal_to_reference: true
   require_hidden_token_ids_equal_to_replay_prompt: true
+formal_scheduler:
+  physical_gpus: [0, 1]
+  num_shards: 4
+  max_workers_per_gpu: 2
+  worker_gpu_memory_utilization: 0.45
+  required_memory_mib_per_worker_slot: 40960
+  poll_seconds: 15
+  policy: fixed_logical_shards_dynamic_physical_gpu
 output_root: results/qwen3_14b_deterministic_ood13k_vllm_full_v1

@@ -185,12 +185,11 @@ def main() -> None:
     gate = json.loads(args.gate_audit.read_text(encoding="utf-8"))
     if gate.get("status") != "complete" or gate.get("all_exact") is not True:
         errors.append("cross-GPU determinism gate not exact")
+    scheduler = config["formal_scheduler"]
+    num_shards = int(scheduler["num_shards"])
     workers = []
-    for name in (
-        "formal_gpu0_replica0",
-        "formal_gpu1_replica0",
-        "formal_gpu1_replica1",
-    ):
+    for shard in range(num_shards):
+        name = f"formal_shard{shard}"
         path = args.output_root / "workers" / f"{name}.json"
         if not path.is_file():
             errors.append(f"missing worker summary: {name}")
@@ -201,12 +200,15 @@ def main() -> None:
             errors.append(f"failed worker summary: {name}")
     if workers:
         worker_shards = {
-            (int(value.get("physical_gpu", -1)), int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
+            (int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
             for value in workers
         }
-        expected_shards = {(0, 0, 3), (1, 1, 3), (1, 2, 3)}
+        expected_shards = {(shard, num_shards) for shard in range(num_shards)}
         if worker_shards != expected_shards:
-            errors.append(f"formal worker shard mismatch: {sorted(worker_shards)}")
+            errors.append(f"formal logical shard mismatch: {sorted(worker_shards)}")
+        allowed_gpus = {int(value) for value in scheduler["physical_gpus"]}
+        if any(int(value.get("physical_gpu", -1)) not in allowed_gpus for value in workers):
+            errors.append("formal worker used a GPU outside the scheduler allowlist")
         if sum(int(value.get("assigned", 0)) for value in workers) != len(expected):
             errors.append("formal worker assigned counts do not cover the dataset exactly once")
 
