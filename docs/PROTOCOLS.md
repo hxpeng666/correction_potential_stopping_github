@@ -10,6 +10,27 @@
 - 指标按 held-out 问题计算；校准不读取 held-out 标签。
 - token cost 排除 prompt，包含实际保留的 reasoning token，以及真正停止时的一次 suffix/短答案。离线标签分支不计在线快速路径。
 
+## 当前权威确定性协议
+
+权威配置为 `configs/deepseek7b_deterministic_three_axis_ablation_v1.yaml`，
+复现约束为 `docs/REPRODUCIBILITY_PROTOCOL_V1.md`。它在 DeepSeek 13K 数据口径
+上进一步冻结以下选择：
+
+- cap-hit Dense 答案：在 exact-13K prefix 后运行一次 greedy forced answer；
+- 主特征：zero-based layer 16 的最后 checkpoint token hidden state与 6 个标量，
+  合计 3590 维；
+- 主优化：checkpoint-proper BCE；学习率 `5e-5`；normalized soft-min
+  trajectory loss，`beta=0.5, lambda_tr=1`；
+- 主校准：problem-level trajectory-envelope LTT，候选顺序来自 probe-train，
+  独立 calibration 只负责认证与在安全集合中最大化 total generated-token
+  reduction；不用经验预算 B，不用 wall time；
+- 风险档位：`alpha = 0.005/0.01/0.02/0.03/0.05/0.10`，`delta=0.05`；
+- MATH-500 与 AIME2024 是 OOD test，AIME 复用 MATH probe 和校准阈值。
+
+正式 runner 仅接受 clean Git commit 与匹配的 runtime lock，并保存输入、标签、
+特征、初始/最终权重及 score hash。旧的 seed 未锁、并发训练、经验 B 主表仅作
+历史追溯，不得与当前权威表逐格混合比较。
+
 ## Qwen3-4B 历史实验
 
 权威配置包括 `final_paper_*`、`gsm8k_full_checkpoint_schedule_ablation_v1.yaml` 和 `literature_methods_qwen3_4b_strict_v2.yaml`。

@@ -7,6 +7,52 @@
 
 仓库不包含模型权重、数据缓存、hidden-state 缓存、probe 权重、结果表、运行日志或服务器 GPU 调度器。科学配置采用仓库相对路径；单机、多卡或集群调度由使用者在外层实现。
 
+## 当前权威实验口径（2026-08-29）
+
+新实验与主表默认采用
+[`configs/deepseek7b_deterministic_three_axis_ablation_v1.yaml`](configs/deepseek7b_deterministic_three_axis_ablation_v1.yaml)。
+除非明确标注为历史复现，仓库中的旧经验预算 `B`、旧 grader、未锁定
+runtime 的结果都不属于当前主口径。
+
+| 项目 | 当前冻结值 |
+|---|---|
+| 基础模型 | 冻结的 `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B` |
+| Dense decoding | `temperature=0.6, top_p=0.95, top_k=20, do_sample=true`；每题使用由 `(seed, problem_id)` 经 SHA-256 派生的独立 RNG |
+| Dense budget | 13,000 new tokens；cap-hit 的 Dense 最终答案由 exact-13K prefix 上的一次 greedy forced answer 判定 |
+| checkpoint | paragraph；无范围过滤；无 checkpoint 时回退 Dense |
+| forced answer | `"\n</think>\n\n\\boxed{"`，greedy，最多 48 tokens；仅离线构造标签及真正退出后生成一次 |
+| hidden / feature | zero-based layer 16；最后 checkpoint token 的 3584 维 hidden state加 6 个标量，共 3590 维 |
+| probe | `3590 -> 384 -> 96 -> 1`，AdamW，学习率 `5e-5`，weight decay `1e-3` |
+| 主点损失 | checkpoint-proper BCE |
+| trajectory | normalized soft-min，`beta=0.5`，`lambda_tr=1`，覆盖全部危险 checkpoint |
+| model selection | 最小 validation objective；最多 24 epochs，patience 6；问题级 80/20 fit/validation |
+| 校准 | problem-level trajectory-envelope Learn-Then-Test；`alpha={0.5%,1%,2%,3%,5%,10%}`，`delta=0.05` |
+| 阈值目标 | 在通过风险认证的阈值中最大化 calibration **total generated-token reduction**；不使用 wall time，不使用经验预算 `B` |
+| OOD | MATH probe 与 MATH calibration 阈值原样迁移到 MATH-500/AIME2024；AIME 不重训、不重校准 |
+
+问题级划分固定为：GSM8K `1000/500/1319`；Hendrycks MATH 七类各
+`200 train + 100 calibration`，合计 `1400/700`；MATH-500 500 题与
+AIME2024 30 题仅作 OOD held-out test。
+
+### “完全消除随机性”的准确含义
+
+当前协议不是把科学采样改成 greedy，而是锁定所有随机源和执行环境：
+
+- Python、NumPy、PyTorch 与 split seed 全部固定为 `0`；
+- `PYTHONHASHSEED=0`、`CUBLAS_WORKSPACE_CONFIG=:4096:8`，关闭 TF32、
+  cuDNN benchmark、AdamW fused/foreach，并启用 deterministic algorithms；
+- 一个 GPU 同时只运行一个 probe trainer；worker 数、shard 顺序不影响每题 RNG；
+- 正式运行要求 clean Git commit、已提交的 runtime lock、输入/特征/标签 hash、
+  初始权重 hash、最终权重 hash与 score hash；任一不一致即 fail closed；
+- 负对照与 forced-answer 分支必须通过 exact-equality gate。当前 suffix 实验已验证
+  两次运行的生成 token IDs、解析答案、正确性和 boxed 检测逐值相同。
+
+因此，位级复现保证限定在
+[`configs/runtime_a100_torch271_cuda126_v1.json`](configs/runtime_a100_torch271_cuda126_v1.json)
+锁定且 UUID 已认证的运行时内；换 CUDA、PyTorch、驱动或未认证 GPU 时，程序会拒绝
+把结果当作同一正式协议，而不是声称跨任意硬件位级一致。完整约束见
+[`docs/REPRODUCIBILITY_PROTOCOL_V1.md`](docs/REPRODUCIBILITY_PROTOCOL_V1.md)。
+
 ## 核心方法
 
 在 checkpoint `t` 离线强制生成短答案，定义当前答案正确性 `c_t` 和 Dense 最终正确性 `f`。主目标为：

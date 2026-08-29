@@ -9,13 +9,13 @@ reproducibility:
   require_clean_git: true
 model:
   id: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
-  local_path: /mnt/hbnas/home/wj/Weights/DeepSeek/DeepSeek-R1-Distill-Qwen-7B
+  local_path: models/DeepSeek-R1-Distill-Qwen-7B
   dtype: bfloat16
   attention_backend: sdpa
   frozen: true
 source:
-  data_root: /mnt/hbnas/home/wj/correction_potential_stopping/results/deepseek7b_forced_cap_grader_method_v1/views
-  probe_root: /mnt/hbnas/home/wj/correction_potential_stopping/results/deepseek7b_deterministic_three_axis_ablation_v2
+  data_root: results/deepseek7b_forced_cap_grader_method_v1/views
+  probe_root: results/deepseek7b_deterministic_three_axis_ablation_v2
   grader: forced_answer_at_exact_13k_prefix_for_cap_hits
   checkpoint_schedule: paragraph
   checkpoint_stored_compatibility_tag: sentence
@@ -57,4 +57,3 @@ exit_attribution:
   transition_classes: [C_to_C, C_to_W, W_to_C, W_to_W]
   test_sets: [gsm8k, math500, aime2024]
   heldout_used_for_selection: false
-
