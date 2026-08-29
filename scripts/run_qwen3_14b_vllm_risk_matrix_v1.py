@@ -40,6 +40,13 @@ def atomic_json(value: Any, path: Path) -> None:
     os.replace(temporary, path)
 
 
+def atomic_text(value: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    temporary.write_text(value, encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def start_logged(
     command: list[str], log: Path, environment: dict[str, str]
 ) -> tuple[subprocess.Popen, Any, float]:
@@ -230,8 +237,10 @@ def main() -> None:
         if previous.get("invocation_fingerprint") != sha256_json(invocation):
             raise RuntimeError("risk output invocation mismatch")
     output.mkdir(parents=True, exist_ok=True)
+    atomic_text(f"{os.getpid()}\n", output / "supervisor.pid")
     state = {
         "status": "running",
+        "supervisor_pid": os.getpid(),
         "started_at": utc_now(),
         "invocation": invocation,
         "invocation_fingerprint": sha256_json(invocation),
