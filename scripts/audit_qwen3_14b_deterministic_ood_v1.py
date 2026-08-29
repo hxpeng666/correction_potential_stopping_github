@@ -118,7 +118,6 @@ def main() -> None:
     workers = []
     for name in (
         "formal_gpu0_replica0",
-        "formal_gpu0_replica1",
         "formal_gpu1_replica0",
         "formal_gpu1_replica1",
     ):
@@ -135,7 +134,7 @@ def main() -> None:
             (int(value.get("gpu", -1)), int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
             for value in workers
         }
-        expected_shards = {(0, 0, 4), (0, 1, 4), (1, 2, 4), (1, 3, 4)}
+        expected_shards = {(0, 0, 3), (1, 1, 3), (1, 2, 3)}
         if worker_shards != expected_shards:
             errors.append(f"formal worker shard mismatch: {sorted(worker_shards)}")
         if sum(int(value.get("assigned", 0)) for value in workers) != len(expected):
