@@ -116,7 +116,12 @@ def main() -> None:
     if gate.get("status") != "complete" or gate.get("all_exact") is not True:
         errors.append("cross-GPU determinism gate not exact")
     workers = []
-    for name in ("formal_gpu0", "formal_gpu1"):
+    for name in (
+        "formal_gpu0_replica0",
+        "formal_gpu0_replica1",
+        "formal_gpu1_replica0",
+        "formal_gpu1_replica1",
+    ):
         path = args.output_root / "workers" / f"{name}.json"
         if not path.is_file():
             errors.append(f"missing worker summary: {name}")
@@ -125,6 +130,16 @@ def main() -> None:
         workers.append(value)
         if value.get("status") != "complete" or value.get("failures") != 0:
             errors.append(f"failed worker summary: {name}")
+    if workers:
+        worker_shards = {
+            (int(value.get("gpu", -1)), int(value.get("shard_index", -1)), int(value.get("num_shards", -1)))
+            for value in workers
+        }
+        expected_shards = {(0, 0, 4), (0, 1, 4), (1, 2, 4), (1, 3, 4)}
+        if worker_shards != expected_shards:
+            errors.append(f"formal worker shard mismatch: {sorted(worker_shards)}")
+        if sum(int(value.get("assigned", 0)) for value in workers) != len(expected):
+            errors.append("formal worker assigned counts do not cover the dataset exactly once")
 
     payload = {
         "status": "complete" if not errors else "failed",
@@ -138,7 +153,10 @@ def main() -> None:
         "zero_checkpoint_dense_fallback": zero_checkpoint,
         "cap_hit_trajectories": capped,
         "workers": [
-            {key: value.get(key) for key in ("worker", "gpu", "assigned", "completed", "skipped", "failures")}
+            {key: value.get(key) for key in (
+                "worker", "gpu", "shard_index", "num_shards", "assigned",
+                "completed", "skipped", "failures",
+            )}
             for value in workers
         ],
         "gate_audit_sha256": sha256_file(args.gate_audit),

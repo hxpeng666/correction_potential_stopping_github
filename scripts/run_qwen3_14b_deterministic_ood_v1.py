@@ -18,6 +18,13 @@ sys.path.insert(0, str(ROOT))
 
 from src.reproducibility import code_provenance, deterministic_subprocess_environment, sha256_json
 
+FORMAL_WORKERS = (
+    (0, "formal_gpu0_replica0", 0, 4),
+    (0, "formal_gpu0_replica1", 1, 4),
+    (1, "formal_gpu1_replica0", 2, 4),
+    (1, "formal_gpu1_replica1", 3, 4),
+)
+
 
 def atomic_json(value: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +115,10 @@ def main() -> None:
         "invocation": invocation,
         "invocation_fingerprint": invocation_fingerprint,
         "code_identity": identity,
+        "formal_workers": [
+            {"gpu": gpu, "worker": worker, "shard_index": shard, "num_shards": total}
+            for gpu, worker, shard, total in FORMAL_WORKERS
+        ],
         "stages": [],
     }
     atomic_json(state, manifest_path)
@@ -155,11 +166,10 @@ def main() -> None:
     atomic_json(state, manifest_path)
 
     formal_processes = []
-    for gpu in (0, 1):
-        worker = f"formal_gpu{gpu}"
+    for gpu, worker, shard, total in FORMAL_WORKERS:
         formal_command = command(
             args.python, args.config, args.prepared_root, args.model_path,
-            output, gpu, worker, gpu, 2,
+            output, gpu, worker, shard, total,
         )
         log = output / "logs" / f"{worker}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +184,7 @@ def main() -> None:
     for process, handle in formal_processes:
         returncodes.append(process.wait())
         handle.close()
-    if returncodes != [0, 0]:
+    if returncodes != [0] * len(FORMAL_WORKERS):
         state.update({"status": "failed", "stage": "collection", "returncodes": returncodes})
         atomic_json(state, manifest_path)
         raise SystemExit(2)
