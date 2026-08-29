@@ -101,6 +101,13 @@ external memory, so a second replica is launched only when the remaining
 external allocation still leaves another complete 40 GiB slot. Cross-GPU exact
 gates justify moving a fixed logical shard between GPU0 and GPU1.
 
+The same-GPU repeat gate is placed on the first GPU with a complete slot,
+preferring GPU1. Once the same-GPU gate and non-engine protocol alignment pass,
+formal shards may begin on that certified GPU while the supervisor waits for a
+slot on the other A100. The cross-GPU gate has priority over formal work on the
+second GPU; only after it passes may formal shards be placed there. Final audit
+and completion still require the cross-GPU gate to be exact.
+
 No formal shard may start unless the risk matrix and all self-reproducibility
 gates pass. A crash, OOM, or a non-exact same-profile gate is evidence to
 preserve; it is not retried with a changed batch, dtype, context, layer, seed,

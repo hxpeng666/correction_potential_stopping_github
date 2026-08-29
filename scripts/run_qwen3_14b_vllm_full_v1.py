@@ -256,6 +256,10 @@ def scheduler_settings(config: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("worker slot reservation must be at least 40960 MiB")
     if float(settings["worker_gpu_memory_utilization"]) != 0.45:
         raise RuntimeError("formal worker memory utilization must remain 0.45")
+    if [int(value) for value in settings["same_gpu_gate_preference"]] != [1, 0]:
+        raise RuntimeError("same-GPU gate preference must remain [1, 0]")
+    if settings.get("allow_collection_before_cross_gpu_gate") is not True:
+        raise RuntimeError("adaptive collection must be allowed before the cross-GPU gate")
     return settings
 
 
@@ -381,22 +385,47 @@ def main() -> None:
     primary_problem = next(
         value for value in gate_problems if str(value["problem_id"]) == primary_problem_id
     )
-    gate_specs = (
-        (0, "same_gpu_repeat0"),
-        (0, "same_gpu_repeat1"),
-        (1, "cross_gpu1"),
-    )
-    for physical_gpu, name in gate_specs:
+    physical_gpus = [int(value) for value in scheduler["physical_gpus"]]
+    primary_gpu: int | None = None
+    while primary_gpu is None:
+        snapshot = gpu_resource_snapshot(
+            physical_gpus,
+            set(),
+            int(scheduler["required_memory_mib_per_worker_slot"]),
+            1,
+        )
+        state["scheduler"]["last_gpu_snapshot"] = snapshot
+        state["scheduler"]["poll_count"] += 1
+        primary_gpu = next(
+            (
+                int(gpu)
+                for gpu in scheduler["same_gpu_gate_preference"]
+                if int(snapshot[int(gpu)]["worker_capacity"]) >= 1
+            ),
+            None,
+        )
+        if primary_gpu is None:
+            state["status"] = "determinism_gate_waiting_for_gpu_memory"
+            state["waiting_gate"] = "same_gpu_repeat0"
+            atomic_json(state, manifest_path)
+            time.sleep(int(scheduler["poll_seconds"]))
+    cross_gpu = next(gpu for gpu in physical_gpus if gpu != primary_gpu)
+    state["gate_placement"] = {
+        "same_gpu": primary_gpu,
+        "cross_gpu": cross_gpu,
+        "collection_before_cross_gpu_gate": True,
+    }
+    for name in ("same_gpu_repeat0", "same_gpu_repeat1"):
         while True:
             snapshot = gpu_resource_snapshot(
-                [physical_gpu],
+                [primary_gpu],
                 set(),
                 int(scheduler["required_memory_mib_per_worker_slot"]),
                 1,
             )
             state["scheduler"]["last_gpu_snapshot"] = snapshot
             state["scheduler"]["poll_count"] += 1
-            if int(snapshot[physical_gpu]["worker_capacity"]) >= 1:
+            if int(snapshot[primary_gpu]["worker_capacity"]) >= 1:
                 state["status"] = "determinism_gate"
                 atomic_json(state, manifest_path)
                 break
@@ -412,7 +441,7 @@ def main() -> None:
             args.prepared_root,
             args.model_path,
             gate_root,
-            physical_gpu,
+            primary_gpu,
             0.45,
             f"gate_{name}",
             0,
@@ -423,7 +452,7 @@ def main() -> None:
         code = run_logged(
             command,
             output / "logs" / f"gate_{name}.log",
-            deterministic_environment(config, physical_gpu),
+            deterministic_environment(config, primary_gpu),
         )
         if code != 0:
             state.update(
@@ -438,48 +467,32 @@ def main() -> None:
             raise SystemExit(2)
 
     same_gate_payloads = []
-    cross_gate_payloads = []
     for problem in gate_problems:
         problem_id = str(problem["problem_id"])
         left = gate_artifact(output / "determinism_gate" / "same_gpu_repeat0", problem)
-        comparisons = (
-            (
-                gate_artifact(output / "determinism_gate" / "same_gpu_repeat1", problem),
-                output / f"SAME_GPU_REPEAT_GATE_{problem_id}.json",
-                "same",
-                f"same_gpu_gate_audit_{problem_id}.log",
-                same_gate_payloads,
-            ),
-            (
-                gate_artifact(output / "determinism_gate" / "cross_gpu1", problem),
-                output / f"CROSS_GPU_GATE_{problem_id}.json",
-                "distinct",
-                f"cross_gpu_gate_audit_{problem_id}.log",
-                cross_gate_payloads,
-            ),
-        )
-        for right, destination, mode, log_name, payloads in comparisons:
-            command = [
-                str(args.python),
-                "scripts/audit_deterministic_collection_pair_v1.py",
-                "--left",
-                str(left),
-                "--right",
-                str(right),
-                "--gpu-mode",
-                mode,
-                "--output",
-                str(destination),
-            ]
-            if run_logged(
-                command,
-                output / "logs" / log_name,
-                deterministic_environment(config),
-            ) != 0:
-                state.update({"status": "failed", "stage": log_name})
-                atomic_json(state, manifest_path)
-                raise SystemExit(2)
-            payloads.append(json.loads(destination.read_text(encoding="utf-8")))
+        destination = output / f"SAME_GPU_REPEAT_GATE_{problem_id}.json"
+        command = [
+            str(args.python),
+            "scripts/audit_deterministic_collection_pair_v1.py",
+            "--left",
+            str(left),
+            "--right",
+            str(gate_artifact(output / "determinism_gate" / "same_gpu_repeat1", problem)),
+            "--gpu-mode",
+            "same",
+            "--output",
+            str(destination),
+        ]
+        log_name = f"same_gpu_gate_audit_{problem_id}.log"
+        if run_logged(
+            command,
+            output / "logs" / log_name,
+            deterministic_environment(config),
+        ) != 0:
+            state.update({"status": "failed", "stage": log_name})
+            atomic_json(state, manifest_path)
+            raise SystemExit(2)
+        same_gate_payloads.append(json.loads(destination.read_text(encoding="utf-8")))
 
     primary_left = gate_artifact(
         output / "determinism_gate" / "same_gpu_repeat0", primary_problem
@@ -504,31 +517,36 @@ def main() -> None:
         state.update({"status": "failed", "stage": "protocol_alignment_gate"})
         atomic_json(state, manifest_path)
         raise SystemExit(2)
-    combined = {
-        "status": "complete",
-        "all_exact": True,
+    same_only = {
+        "status": "same_gpu_complete_cross_gpu_pending",
+        "same_gpu_exact": True,
         "same_gpu_repeat": same_gate_payloads,
-        "cross_gpu": cross_gate_payloads,
         "protocol_alignment": json.loads(alignment.read_text(encoding="utf-8")),
         "risk_matrix_sha256": sha256_file(args.risk_gate_audit),
         "risk_matrix_recommended_profile": risk_gate["recommended_profile"],
         "created_at": utc_now(),
     }
-    atomic_json(combined, output / "DETERMINISM_GATE.json")
+    atomic_json(same_only, output / "DETERMINISM_GATE_SAME_GPU.json")
     state["stages"].append("same_gpu_repeat_exact_gate")
-    state["stages"].append("cross_gpu_exact_gate")
     state["stages"].append("non_engine_protocol_alignment_gate")
-    state["status"] = "collecting"
+    state["status"] = "collecting_pending_cross_gpu_gate"
     atomic_json(state, manifest_path)
 
     pending = list(range(int(scheduler["num_shards"])))
     active: dict[int, tuple[subprocess.Popen, Any, int]] = {}
+    cross_process: subprocess.Popen | None = None
+    cross_handle: Any | None = None
+    cross_complete = False
+    cross_gate_payloads: list[dict[str, Any]] = []
     failed = False
-    physical_gpus = [int(value) for value in scheduler["physical_gpus"]]
     worker_records = {
         int(value["shard_index"]): value for value in state["formal_workers"]
     }
-    while pending or active:
+    state["cross_gpu_gate"] = {
+        "physical_gpu": cross_gpu,
+        "status": "pending_memory",
+    }
+    while pending or active or not cross_complete:
         for shard, (process, handle, gpu) in list(active.items()):
             returncode = process.poll()
             if returncode is None:
@@ -549,7 +567,95 @@ def main() -> None:
                         "returncode": returncode,
                     }
                 )
+        if cross_process is not None and cross_process.poll() is not None:
+            cross_returncode = int(cross_process.returncode)
+            if cross_handle is not None:
+                cross_handle.close()
+            cross_process = None
+            cross_handle = None
+            state["cross_gpu_gate"].update(
+                {
+                    "returncode": cross_returncode,
+                    "worker_completed_at": utc_now(),
+                }
+            )
+            if cross_returncode != 0:
+                failed = True
+                state.update(
+                    {
+                        "status": "failed",
+                        "stage": "cross_gpu_gate",
+                        "returncode": cross_returncode,
+                    }
+                )
+                state["cross_gpu_gate"]["status"] = "failed"
+            else:
+                cross_gate_payloads = []
+                for problem in gate_problems:
+                    problem_id = str(problem["problem_id"])
+                    destination = output / f"CROSS_GPU_GATE_{problem_id}.json"
+                    command = [
+                        str(args.python),
+                        "scripts/audit_deterministic_collection_pair_v1.py",
+                        "--left",
+                        str(
+                            gate_artifact(
+                                output / "determinism_gate" / "same_gpu_repeat0",
+                                problem,
+                            )
+                        ),
+                        "--right",
+                        str(
+                            gate_artifact(
+                                output
+                                / "determinism_gate"
+                                / f"cross_gpu{cross_gpu}",
+                                problem,
+                            )
+                        ),
+                        "--gpu-mode",
+                        "distinct",
+                        "--output",
+                        str(destination),
+                    ]
+                    log_name = f"cross_gpu_gate_audit_{problem_id}.log"
+                    if run_logged(
+                        command,
+                        output / "logs" / log_name,
+                        deterministic_environment(config),
+                    ) != 0:
+                        failed = True
+                        state.update({"status": "failed", "stage": log_name})
+                        state["cross_gpu_gate"]["status"] = "failed"
+                        break
+                    cross_gate_payloads.append(
+                        json.loads(destination.read_text(encoding="utf-8"))
+                    )
+                if not failed:
+                    cross_complete = True
+                    state["cross_gpu_gate"]["status"] = "complete"
+                    state["cross_gpu_gate"]["completed_at"] = utc_now()
+                    state["stages"].append("cross_gpu_exact_gate")
+                    state["status"] = "collecting"
+                    combined = {
+                        "status": "complete",
+                        "all_exact": True,
+                        "gate_placement": state["gate_placement"],
+                        "same_gpu_repeat": same_gate_payloads,
+                        "cross_gpu": cross_gate_payloads,
+                        "protocol_alignment": json.loads(
+                            alignment.read_text(encoding="utf-8")
+                        ),
+                        "risk_matrix_sha256": sha256_file(args.risk_gate_audit),
+                        "risk_matrix_recommended_profile": risk_gate[
+                            "recommended_profile"
+                        ],
+                        "created_at": utc_now(),
+                    }
+                    atomic_json(combined, output / "DETERMINISM_GATE.json")
         roots = {process.pid for process, _, _ in active.values()}
+        if cross_process is not None:
+            roots.add(cross_process.pid)
         snapshot = gpu_resource_snapshot(
             physical_gpus,
             roots,
@@ -560,13 +666,62 @@ def main() -> None:
             gpu: sum(1 for _, _, local_gpu in active.values() if local_gpu == gpu)
             for gpu in physical_gpus
         }
+        if cross_process is not None:
+            active_per_gpu[cross_gpu] += 1
         state["scheduler"]["last_gpu_snapshot"] = snapshot
         state["scheduler"]["poll_count"] += 1
+        if (
+            not failed
+            and not cross_complete
+            and cross_process is None
+            and active_per_gpu[cross_gpu] < int(snapshot[cross_gpu]["worker_capacity"])
+        ):
+            cross_root = output / "determinism_gate" / f"cross_gpu{cross_gpu}"
+            command = collector_command(
+                args.python,
+                args.config,
+                args.prepared_root,
+                args.model_path,
+                cross_root,
+                cross_gpu,
+                float(scheduler["worker_gpu_memory_utilization"]),
+                f"gate_cross_gpu{cross_gpu}",
+                0,
+                1,
+                args.profile,
+                problem_ids=gate_problem_ids,
+            )
+            log = output / "logs" / f"gate_cross_gpu{cross_gpu}.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            cross_handle = log.open("a", encoding="utf-8")
+            cross_handle.write("COMMAND " + json.dumps(command) + "\n")
+            cross_handle.flush()
+            cross_process = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=deterministic_environment(config, cross_gpu),
+                stdout=cross_handle,
+                stderr=subprocess.STDOUT,
+            )
+            active_per_gpu[cross_gpu] += 1
+            state["cross_gpu_gate"].update(
+                {
+                    "status": "running",
+                    "pid": cross_process.pid,
+                    "started_at": utc_now(),
+                }
+            )
         if not failed and pending:
+            allowed_formal_gpus = {primary_gpu}
+            if cross_complete:
+                allowed_formal_gpus.add(cross_gpu)
             launched = True
             while pending and launched:
                 launched = False
-                for gpu in sorted(physical_gpus, key=lambda item: (active_per_gpu[item], item)):
+                for gpu in sorted(
+                    allowed_formal_gpus,
+                    key=lambda item: (active_per_gpu[item], item),
+                ):
                     if not pending or active_per_gpu[gpu] >= int(
                         snapshot[gpu]["worker_capacity"]
                     ):
@@ -611,9 +766,9 @@ def main() -> None:
                     )
                     launched = True
         atomic_json(state, manifest_path)
-        if failed and not active:
+        if failed and not active and cross_process is None:
             raise SystemExit(2)
-        if pending or active:
+        if pending or active or not cross_complete:
             time.sleep(int(scheduler["poll_seconds"]))
     state["stages"].append("adaptive_two_gpu_collection")
     state["status"] = "auditing"

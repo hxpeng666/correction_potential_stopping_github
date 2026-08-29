@@ -161,5 +161,7 @@ formal_scheduler:
   worker_gpu_memory_utilization: 0.45
   required_memory_mib_per_worker_slot: 40960
   poll_seconds: 15
+  same_gpu_gate_preference: [1, 0]
+  allow_collection_before_cross_gpu_gate: true
   policy: fixed_logical_shards_dynamic_physical_gpu
 output_root: results/qwen3_14b_deterministic_ood13k_vllm_full_v1
