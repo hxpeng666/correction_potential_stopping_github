@@ -55,11 +55,10 @@ def test_current_scientific_protocol_is_frozen() -> None:
     assert config["calibration"]["empirical_budget_B_used"] is False
 
 
-def test_four_worker_shards_are_exact_and_disjoint() -> None:
+def test_three_worker_shards_are_exact_and_disjoint() -> None:
     assert FORMAL_WORKERS == (
-        (0, "formal_gpu0_replica0", 0, 4),
-        (0, "formal_gpu0_replica1", 1, 4),
-        (1, "formal_gpu1_replica0", 2, 4),
-        (1, "formal_gpu1_replica1", 3, 4),
+        (0, "formal_gpu0_replica0", 0, 3),
+        (1, "formal_gpu1_replica0", 1, 3),
+        (1, "formal_gpu1_replica1", 2, 3),
     )
-    assert {worker[2] for worker in FORMAL_WORKERS} == set(range(4))
+    assert {worker[2] for worker in FORMAL_WORKERS} == set(range(3))

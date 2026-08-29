@@ -19,10 +19,9 @@ sys.path.insert(0, str(ROOT))
 from src.reproducibility import code_provenance, deterministic_subprocess_environment, sha256_json
 
 FORMAL_WORKERS = (
-    (0, "formal_gpu0_replica0", 0, 4),
-    (0, "formal_gpu0_replica1", 1, 4),
-    (1, "formal_gpu1_replica0", 2, 4),
-    (1, "formal_gpu1_replica1", 3, 4),
+    (0, "formal_gpu0_replica0", 0, 3),
+    (1, "formal_gpu1_replica0", 1, 3),
+    (1, "formal_gpu1_replica1", 2, 3),
 )
 
 
