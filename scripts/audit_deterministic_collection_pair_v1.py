@@ -36,6 +36,9 @@ def without(mapping: dict[str, Any], names: set[str]) -> dict[str, Any]:
 
 def scientific_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     dense = without(dict(artifact["dense"]), {"wall_ms"})
+    cap_forced_answer = dense.get("cap_forced_answer")
+    if isinstance(cap_forced_answer, dict):
+        dense["cap_forced_answer"] = without(cap_forced_answer, {"wall_ms"})
     rows = [
         without(
             dict(row),
