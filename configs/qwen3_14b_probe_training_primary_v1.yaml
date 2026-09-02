@@ -1,0 +1,82 @@
+primary: true
+runnable: true
+protocol_id: cps_qwen3_14b_probe_training_primary_v1
+report_label: Deterministic Qwen3-14B five-target probes with trajectory-envelope LTT
+seed:
+  global: 20260820
+  probe: 0
+reproducibility:
+  protocol: cps_strict_determinism_v2_runtime_locked
+  runtime_lock: configs/runtime_a100_torch271_cuda126_v1.json
+  require_clean_git: true
+  fixed_training_seed: 0
+  fixed_split_seed: 0
+  additional_seed_selection: false
+model:
+  id: Qwen/Qwen3-14B
+  local_path: /mnt/hbnas/home/wj/Weights/Qwen/Qwen3-14B
+  dtype: bfloat16
+  frozen: true
+  hidden_size: 5120
+generation:
+  dense_max_new_tokens: 13000
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  do_sample: true
+  force_answer_max_new_tokens: 48
+  forced_answer_strategy: greedy_argmax
+  forced_answer_do_sample: false
+  force_answer_suffix: "\n</think>\n\n\\boxed{"
+  cap_final_answer_grader: forced_at_exact_13k
+checkpoint:
+  schedule: paragraph
+  range_filter: none
+  zero_checkpoint_policy: dense_fallback
+features:
+  primary_kind: full_no_delta
+  primary_width: 5126
+  layer_zero_based: 20
+probe:
+  shared_architecture: [5126, 384, 96, 1]
+  layer_norm_after_first_linear: true
+  activation: GELU
+  dropout: [0.15, 0.10]
+  optimizer: AdamW
+  learning_rate: 0.00005
+  weight_decay: 0.001
+  trajectory_batch_size: 24
+  gradient_clip: 2.0
+  max_epochs: 24
+  patience: 6
+  internal_fit_fraction: 0.8
+  scaler_fit_scope: probe_train_internal_fit_only
+  model_selection: minimum_validation_objective
+  trajectory_softmin_beta: 0.5
+  trajectory_weight: 1.0
+calibration:
+  primary_calibrator: trajectory_envelope_ltt
+  candidate_threshold_source: probe_train_only
+  certification_split: independent_calibration_only
+  ltt_alphas: [0.005, 0.01, 0.02, 0.03, 0.05, 0.10]
+  ltt_delta: 0.05
+  objective: token_reduction_reasoning_only
+  empirical_budget_B_used: false
+  quantile_grid_size: 101
+  empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
+  rate_matched_empirical_budgets: []
+  coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+dynamic_policy:
+  accuracy_epsilon: 0.01
+data:
+  root: /mnt/hbnas/home/wj/correction_potential_stopping/results/qwen3_14b_deterministic_ood13k_vllm_adaptive_v2/cache
+  collection_manifest: /mnt/hbnas/home/wj/correction_potential_stopping/results/qwen3_14b_deterministic_ood13k_vllm_adaptive_v2/FINAL_COLLECTION_MANIFEST.json
+  collection_protocol_fingerprint: f0bbd47dde567a9659469a97fcb9a1bc93f4c30a56d4cc7179c0012ca4a0a090
+  gsm8k: {probe_train: 1000, calibration: 500, heldout: 1319}
+  math:
+    probe_train: 1400
+    calibration: 700
+    categories: [algebra, counting_and_probability, geometry, intermediate_algebra, number_theory, prealgebra, precalculus]
+    per_category: {probe_train: 200, calibration: 100}
+  math500: {heldout: 500, role: ood_test}
+  aime: {heldout: 30, role: ood_test, train_and_calibration_source: math}

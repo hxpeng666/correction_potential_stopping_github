@@ -24,7 +24,7 @@ FEATURE_KINDS = (
     "full_no_entropy",
     "full_no_position",
 )
-SCHEDULES = ("fixed", "sentence", "hybrid")
+SCHEDULES = ("fixed", "sentence", "hybrid", "paragraph")
 
 
 class FinalPaperProbe(nn.Module):
@@ -60,10 +60,17 @@ def _finite_cost(value: Any, token_fallback: int | float) -> float:
 
 
 def _fallback_record(artifact: dict[str, Any], schedule: str) -> dict[str, Any]:
-    source_path = Path(artifact["source_dense_artifact"])
-    if not source_path.is_absolute():
-        source_path = PROJECT_ROOT / source_path
-    source = torch.load(source_path, map_location="cpu", weights_only=False)
+    source_reference = artifact.get("source_dense_artifact")
+    if source_reference is None:
+        # New deterministic collectors store the Dense endpoint directly in the
+        # scientific artifact.  Historical replay views instead point to a
+        # separate source artifact.  Both representations carry the same fields.
+        source = artifact
+    else:
+        source_path = Path(source_reference)
+        if not source_path.is_absolute():
+            source_path = PROJECT_ROOT / source_path
+        source = torch.load(source_path, map_location="cpu", weights_only=False)
     dense = source["dense"]
     dense_tokens = int(dense["reasoning_tokens"])
     decoding = artifact.get("forced_answer_decoding", {})

@@ -475,8 +475,11 @@ def main() -> None:
     ).astype(np.float32)
 
     width = int(features["probe_train"].shape[1])
-    if args.feature_kind == "full_no_delta" and width != 3590:
-        raise ValueError(f"DeepSeek full_no_delta input width must be 3590, got {width}")
+    configured_width = int(config.get("features", {}).get("primary_width", width))
+    if args.feature_kind == "full_no_delta" and width != configured_width:
+        raise ValueError(
+            f"full_no_delta input width must match config ({configured_width}), got {width}"
+        )
     model = FinalPaperProbe(width).to(device)
     initial_state_sha256 = sha256_state_dict(model.state_dict())
     probe_config = config["probe"]
