@@ -66,6 +66,9 @@ calibration:
   empirical_lost_correct_budgets: [0, 1, 2, 4, 10]
   rate_matched_empirical_budgets: []
   coverage_targets: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+  # Compatibility-only metadata consumed by the controlled-label trainer.
+  # The formal deployment calibration below remains LTT-only.
+  named_workpoints: {}
 dynamic_policy:
   accuracy_epsilon: 0.01
 data:
